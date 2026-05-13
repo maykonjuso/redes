@@ -16,11 +16,10 @@ import type { Components } from "react-markdown";
  * Deliberately conservative to avoid false positives in prose.
  */
 function preprocessMath(text: string): string {
-  // X^(multi-char expr)  — most important case: N^(3/2), 2^(n-1), 2^(32−n) etc.
+  // X^(multi-char expr): N^(3/2), 2^(n-1), 2^(32−n), 10^(30/10) etc.
   let out = text.replace(/([\w]+)\^\(([^)\n]+)\)/g, (_m, base, exp) => `$${base}^{${exp}}$`);
-  // X^Y single letter/digit not already inside $...$
-  // Only run outside of already-converted $ blocks
-  out = out.replace(/(?<!\$)([\w]+)\^([A-Za-z])(?!\w|\$|\{)/g, (_m, base, exp) => `$${base}^{${exp}}$`);
+  // X^Y — single letter or digit exponent not already inside $...$ or followed by more word chars
+  out = out.replace(/(?<!\$)([\w]+)\^([A-Za-z0-9])(?![\w${}])/g, (_m, base, exp) => `$${base}^{${exp}}$`);
   return out;
 }
 
@@ -58,7 +57,7 @@ export function MD({ children, block }: MDProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
+      rehypePlugins={[[rehypeKatex, { output: "html" }]]}
       components={block ? blockComponents : inlineComponents}
     >
       {preprocessMath(children)}
