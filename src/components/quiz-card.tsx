@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, XCircle, BookOpen, ChevronDown, ChevronUp, Lightbulb, AlertCircle, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,66 +9,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { SignalDiagram } from "@/components/signal-diagram";
 import { SlidingWindowViz } from "@/components/sliding-window-viz";
+import { MD } from "@/components/md";
 import type { QuizQuestion } from "@/lib/questions";
-
-function renderLine(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>;
-    }
-    return part;
-  });
-}
-
-function renderDeepDive(text: string) {
-  const lines = text.split("\n");
-  const nodes: React.ReactNode[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].startsWith("|")) {
-      const tableLines: string[] = [];
-      while (i < lines.length && lines[i].startsWith("|")) {
-        tableLines.push(lines[i]);
-        i++;
-      }
-      const dataRows = tableLines.filter((l) => !/^\|[\s|:-]+\|$/.test(l));
-      const parsed = dataRows.map((l) =>
-        l.split("|").slice(1, -1).map((c) => c.trim())
-      );
-      if (parsed.length > 0) {
-        nodes.push(
-          <table key={`tbl-${i}`} className="w-full text-xs border-collapse my-1">
-            <thead>
-              <tr>
-                {parsed[0].map((cell, j) => (
-                  <th key={j} className="border border-border px-2 py-1 bg-muted/60 text-left font-semibold">
-                    {renderLine(cell)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {parsed.slice(1).map((row, ri) => (
-                <tr key={ri} className="even:bg-muted/20">
-                  {row.map((cell, j) => (
-                    <td key={j} className="border border-border px-2 py-1">{renderLine(cell)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        );
-      }
-    } else {
-      nodes.push(
-        <p key={i} className="text-sm leading-relaxed whitespace-pre-wrap">{renderLine(lines[i])}</p>
-      );
-      i++;
-    }
-  }
-  return nodes;
-}
 
 const DIFFICULTY_COLORS = {
   easy: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
@@ -138,7 +80,9 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
             {question.subtopic}
           </Badge>
         </div>
-        <h2 className="text-base font-semibold leading-relaxed">{question.question}</h2>
+        <h2 className="text-base font-semibold leading-relaxed">
+          <MD>{question.question}</MD>
+        </h2>
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -146,7 +90,6 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
 
         <div className="space-y-2">
           {question.options.map((opt) => {
-            let variant = "outline";
             let extra = "";
             if (answered) {
               if (opt.id === question.correctAnswer) {
@@ -168,7 +111,7 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
                 `}
               >
                 <span className="font-bold uppercase text-muted-foreground w-4 shrink-0">{opt.id})</span>
-                <span>{opt.text}</span>
+                <span><MD>{opt.text}</MD></span>
                 {answered && opt.id === question.correctAnswer && (
                   <CheckCircle2 className="ml-auto shrink-0 text-green-500 h-5 w-5" />
                 )}
@@ -203,11 +146,11 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
                 ) : (
                   <AlertCircle className="shrink-0 text-amber-500 h-5 w-5 mt-0.5" />
                 )}
-                <div>
+                <div className="text-sm leading-relaxed text-foreground/80">
                   <p className="font-semibold text-sm mb-1">
                     {isCorrect ? "Correto! " : `Incorreto — A resposta correta é (${question.correctAnswer.toUpperCase()})`}
                   </p>
-                  <p className="text-sm leading-relaxed text-foreground/80">{renderLine(question.explanation)}</p>
+                  <MD>{question.explanation}</MD>
                 </div>
               </div>
 
@@ -217,7 +160,9 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
                     <Quote className="h-3.5 w-3.5" />
                     Trecho do Material do Professor
                   </div>
-                  <p className="text-sm italic leading-relaxed text-amber-900 dark:text-amber-200">&ldquo;{renderLine(question.sourceExcerpt)}&rdquo;</p>
+                  <p className="text-sm italic leading-relaxed text-amber-900 dark:text-amber-200">
+                    &ldquo;<MD>{question.sourceExcerpt}</MD>&rdquo;
+                  </p>
                   <p className="text-[10px] text-amber-600 dark:text-amber-500">{question.apostilaRef}</p>
                 </div>
               )}
@@ -240,9 +185,7 @@ export function QuizCard({ question, questionNumber, total, onAnswer, onNext }: 
                     className="overflow-hidden"
                   >
                     <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-                      <div className="prose prose-sm dark:prose-invert max-w-none">
-                        {renderDeepDive(question.deepDive)}
-                      </div>
+                      <MD block>{question.deepDive}</MD>
                       <Separator />
                       <div className="flex items-start gap-2">
                         <BookOpen className="h-4 w-4 text-primary shrink-0 mt-0.5" />

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronUp, BookOpen, Lightbulb, Quote } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -9,66 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { SignalDiagram } from "@/components/signal-diagram";
 import { SlidingWindowViz } from "@/components/sliding-window-viz";
+import { MD } from "@/components/md";
 import type { QuizQuestion } from "@/lib/questions";
-
-function renderLine(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>;
-    }
-    return part;
-  });
-}
-
-function renderDeepDive(text: string) {
-  const lines = text.split("\n");
-  const nodes: React.ReactNode[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].startsWith("|")) {
-      const tableLines: string[] = [];
-      while (i < lines.length && lines[i].startsWith("|")) {
-        tableLines.push(lines[i]);
-        i++;
-      }
-      const dataRows = tableLines.filter((l) => !/^\|[\s|:-]+\|$/.test(l));
-      const parsed = dataRows.map((l) =>
-        l.split("|").slice(1, -1).map((c) => c.trim())
-      );
-      if (parsed.length > 0) {
-        nodes.push(
-          <table key={`tbl-${i}`} className="w-full text-xs border-collapse my-1">
-            <thead>
-              <tr>
-                {parsed[0].map((cell, j) => (
-                  <th key={j} className="border border-border px-2 py-1 bg-muted/60 text-left font-semibold">
-                    {renderLine(cell)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {parsed.slice(1).map((row, ri) => (
-                <tr key={ri} className="even:bg-muted/20">
-                  {row.map((cell, j) => (
-                    <td key={j} className="border border-border px-2 py-1">{renderLine(cell)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        );
-      }
-    } else {
-      nodes.push(
-        <p key={i} className="text-xs leading-relaxed whitespace-pre-wrap">{renderLine(lines[i])}</p>
-      );
-      i++;
-    }
-  }
-  return nodes;
-}
 
 const DIFFICULTY_COLORS = {
   easy: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
@@ -105,7 +47,9 @@ export function StudyCard({ question }: { question: QuizQuestion }) {
           <Badge variant="secondary" className="text-xs">{question.topic}</Badge>
           <Badge variant="outline" className="text-xs text-muted-foreground">{question.subtopic}</Badge>
         </div>
-        <p className="text-sm font-medium leading-relaxed">{question.question}</p>
+        <p className="text-sm font-medium leading-relaxed">
+          <MD>{question.question}</MD>
+        </p>
       </CardHeader>
       <CardContent className="space-y-3">
         {diagram && <div>{diagram}</div>}
@@ -121,7 +65,7 @@ export function StudyCard({ question }: { question: QuizQuestion }) {
               }`}
             >
               <span className="font-bold text-muted-foreground uppercase w-4 shrink-0">{opt.id})</span>
-              <span>{opt.text}</span>
+              <span><MD>{opt.text}</MD></span>
             </div>
           ))}
         </div>
@@ -147,7 +91,9 @@ export function StudyCard({ question }: { question: QuizQuestion }) {
                 <p className="text-xs font-semibold text-green-700 dark:text-green-300 mb-1">
                   Resposta: ({question.correctAnswer.toUpperCase()})
                 </p>
-                <p className="text-sm leading-relaxed text-foreground/80">{renderLine(question.explanation)}</p>
+                <div className="text-sm leading-relaxed text-foreground/80">
+                  <MD>{question.explanation}</MD>
+                </div>
               </div>
 
               {question.sourceExcerpt && (
@@ -156,7 +102,9 @@ export function StudyCard({ question }: { question: QuizQuestion }) {
                     <Quote className="h-3 w-3" />
                     Trecho do Material
                   </div>
-                  <p className="text-xs italic leading-relaxed text-amber-900 dark:text-amber-200">&ldquo;{renderLine(question.sourceExcerpt)}&rdquo;</p>
+                  <p className="text-xs italic leading-relaxed text-amber-900 dark:text-amber-200">
+                    &ldquo;<MD>{question.sourceExcerpt}</MD>&rdquo;
+                  </p>
                 </div>
               )}
 
@@ -178,7 +126,7 @@ export function StudyCard({ question }: { question: QuizQuestion }) {
                     className="overflow-hidden"
                   >
                     <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                      {renderDeepDive(question.deepDive)}
+                      <MD block>{question.deepDive}</MD>
                       <Separator />
                       <div className="flex items-start gap-2">
                         <BookOpen className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
