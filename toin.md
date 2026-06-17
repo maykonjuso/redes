@@ -7,6 +7,48 @@ Topologia usada: **Figura 01** (com enlace WAN via PPP entre dois roteadores).
 
 ---
 
+## 📦 O que instalar em cada máquina (faça isto primeiro)
+
+Comandos para **Debian/Ubuntu** (`apt`). Em distros com outro gerenciador, troque `apt-get install` por `dnf install` (Fedora/RHEL) ou `pacman -S` (Arch).
+
+> Antes de tudo, em **todas** as máquinas:
+> ```bash
+> sudo apt-get update
+> ```
+
+| Máquina | Pacotes necessários | Para quê |
+|---------|---------------------|----------|
+| **S** (servidor) | `vlc` | transmitir o vídeo em multicast |
+| **R1** (roteador) | `ppp`, `smcroute`, `iproute2`, `tcpdump`, `iftop` | enlace PPP, roteamento multicast, diagnóstico |
+| **R2** (roteador) | `ppp`, `smcroute`, `iproute2`, `tcpdump`, `iftop` | enlace PPP, roteamento multicast, diagnóstico |
+| **X** (cliente) | `vlc` | receber/assistir o vídeo |
+| **Y** (cliente) | `vlc` | receber/assistir o vídeo |
+
+> `iproute2` (que fornece o comando `ip` e o `tc`) quase sempre **já vem instalado**. Os demais talvez precisem ser instalados.
+
+### Comando único por papel
+
+**No servidor S:**
+```bash
+sudo apt-get install -y vlc
+```
+
+**Em CADA roteador (R1 e R2):**
+```bash
+sudo apt-get install -y ppp smcroute iproute2 tcpdump iftop
+```
+
+**Em CADA cliente (X e Y):**
+```bash
+sudo apt-get install -y vlc
+```
+
+> ℹ️ O VLC se recusa a rodar como `root`. Rode-o com seu **usuário normal** (sem `sudo`). Os comandos de rede (`ip`, `pppd`, `smcroute`, `tc`) é que precisam de `sudo`.
+
+> ℹ️ Você também precisa de um **arquivo de vídeo** na máquina S para transmitir (ex.: `video.mp4`). Qualquer vídeo serve para o teste.
+
+---
+
 ## 0. Visão geral da topologia e máquinas
 
 São necessárias **5 máquinas Linux**.
