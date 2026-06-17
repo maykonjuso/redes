@@ -251,6 +251,12 @@ lock
 local
 ```
 
+> ⚠️ **Erro comum: `No suitable secret found for authenticating with the peer`.**
+> Isso significa que o `pppd` está exigindo autenticação (PAP/CHAP) e não achou senha.
+> Solução: a linha **`noauth` precisa estar nas DUAS máquinas** (R1 e R2). Se houver
+> alguma linha `auth`, `require-pap` ou `require-chap` no arquivo, **comente-a** com `#`.
+> Se só uma ponta tiver `noauth`, a conexão ainda falha.
+
 Depois, suba o PPP em **R1 e R2 ao mesmo tempo**:
 
 ```bash
