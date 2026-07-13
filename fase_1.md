@@ -11,9 +11,8 @@ graph TB
         Z["Z — cliente LAN"]
         W["W — cliente LAN"]
     end
-    subgraph LAN1["LAN #1 — 172.16.0.0/16"]
+    subgraph LAN1["LAN #1 — 172.16.0.0/16 (cabo direto S↔R1)"]
         S["S — 172.16.0.2<br/>DNS · SMTP · VLC Server · backend"]
-        SW1[["switch"]]
         R1["R1 — 172.16.0.1<br/>WEB/API Gateway · SNAT/DNAT"]
     end
     subgraph WAN["WAN — enlace PPP serial 115200 bps"]
@@ -22,18 +21,18 @@ graph TB
     end
     subgraph LAN2["LAN #2 — 192.168.0.0/24"]
         R2["R2 — 192.168.0.1<br/>DHCP Server"]
-        SW2[["switch"]]
+        RT[["roteador em modo switch<br/>(portas LAN · DHCP desligado)"]]
         X["X — DHCP .100–.200"]
         Y["Y — DHCP .100–.200"]
     end
     INET --- LAB
     LAB ---|"USB→Ethernet (único acesso externo)"| R1
-    S --- SW1 --- R1
+    S ---|"patch cord direto"| R1
     R1 --- P1
     P2 --- R2
-    R2 --- SW2
-    SW2 --- X
-    SW2 --- Y
+    R2 --- RT
+    RT --- X
+    RT --- Y
 ```
 
 - DNS/SMTP/VLC/backend em **S** · WEB/API Gateway/NAT em **R1** · DHCP em **R2**
@@ -85,12 +84,25 @@ sudo apt install -y vlc thunderbird iperf
 
 ## 1. Cabeamento — 📍 físico (todas as máquinas)
 
-1. S e R1 (`LAN1`) no switch da LAN#1.
-2. Adaptador USB→Ethernet de R1 na rede do Lab (só R1 toca o Lab!).
-3. R2, X e Y no switch da LAN#2.
-4. Cabo serial **cross RS-232** entre R1 e R2.
+Material do grupo: **7 PCs + 1 roteador doméstico** (usado só como switch) + adaptadores USB→Eth + cabo serial cross.
+
+| PC | Papel | Conexão |
+|---|---|---|
+| PC1 | S | cabo Ethernet **direto** até R1 (LAN#1 tem só 2 hosts — dispensa switch; auto-MDIX resolve) |
+| PC2 | R1 | Eth nativa ↔ S · adaptador USB→Eth ↔ rede do Lab · serial ↔ R2 |
+| PC3 | R2 | Eth ↔ porta LAN do roteador · serial ↔ R1 |
+| PC4/PC5 | X, Y | Eth ↔ portas LAN do roteador |
+| PC6/PC7 | Z, W | Eth ↔ rede do Lab |
+| Roteador | switch da LAN#2 | **só portas LAN** (WAN vazia) e **DHCP desligado** |
+
+1. **Antes de montar**: acesse a administração do roteador e **desabilite o servidor DHCP dele** — quem entrega IP na LAN#2 é o R2 (requisito do projeto). Não use a porta WAN/Internet do roteador.
+2. Ligue S ↔ R1 com patch cord direto (`LAN1` nas duas pontas).
+3. Adaptador USB→Ethernet de R1 na rede do Lab (só R1 toca o Lab!).
+4. R2, X e Y nas portas LAN do roteador (é a LAN#2).
+5. Cabo serial **cross RS-232** entre R1 e R2.
 
 Valide em cada máquina: `ip -brief link` → interfaces `UP`.
+> Se X/Y pegarem IP que **não** seja da faixa `192.168.0.100–200` depois do passo 7, o DHCP do roteador ainda está ligado — desative-o.
 
 ---
 
