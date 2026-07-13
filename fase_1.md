@@ -212,6 +212,42 @@ sudo ip route add default via 10.0.0.1
 ping -c 2 10.0.0.2 && ping -c 2 192.168.0.1
 ```
 
+### Tabela de rotas esperada por máquina
+
+Confira com `ip route` — cada máquina deve ficar assim:
+
+**S** (tudo sai por R1):
+| Destino | Via (gateway) | Interface | Para quê |
+|---|---|---|---|
+| `172.16.0.0/16` | — (conectada) | LAN1 | LAN#1 local |
+| `239.0.0.0/8` | — (conectada) | LAN1 | multicast sai pela LAN#1 (Fase 2) |
+| `default` | `172.16.0.1` (R1) | LAN1 | WAN, LAN#2 e Internet |
+
+**R1** (o centro da rede — conhece todos os caminhos):
+| Destino | Via (gateway) | Interface | Para quê |
+|---|---|---|---|
+| `172.16.0.0/16` | — (conectada) | LAN1 | LAN#1 (S) |
+| `10.0.0.2` | — (ponto-a-ponto) | ppp0 | WAN → R2 |
+| `192.168.0.0/24` | `10.0.0.2` (R2) | ppp0 | LAN#2 (X, Y) pela WAN |
+| `<rede do Lab>` | — (conectada) | LAB | Z, W e gateway do Lab |
+| `default` | `<gw do Lab>` (DHCP) | LAB | Internet |
+
+**R2**:
+| Destino | Via (gateway) | Interface | Para quê |
+|---|---|---|---|
+| `192.168.0.0/24` | — (conectada) | LAN2 | LAN#2 local (X, Y) |
+| `10.0.0.1` | — (ponto-a-ponto) | ppp0 | WAN → R1 |
+| `172.16.0.0/16` | `10.0.0.1` (R1) | ppp0 | LAN#1 (S) pela WAN |
+| `default` | `10.0.0.1` (R1) | ppp0 | Internet (via SNAT em R1) |
+
+**X e Y** (tudo via DHCP do R2 — não configurar nada à mão):
+| Destino | Via (gateway) | Interface | Para quê |
+|---|---|---|---|
+| `192.168.0.0/24` | — (conectada) | LAN2 | LAN#2 local |
+| `default` | `192.168.0.1` (R2) | LAN2 | LAN#1, WAN e Internet |
+
+> Regra de ouro para diagnosticar: **todo caminho de ida precisa do caminho de volta**. Se `S → X` falha, confira a rota `192.168.0.0/24` em R1 **e** a rota `172.16.0.0/16` em R2.
+
 ---
 
 ## 6. NAT e firewall — 📍 só em R1
