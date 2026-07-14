@@ -131,66 +131,84 @@ Valide em cada máquina: `ip -brief link` → interfaces `UP`.
 
 ## 2. IPs estáticos — 📍 em S, em R1 e em R2 (cada bloco na sua máquina)
 
-Cada bloco pergunta a interface (digite o número) e aplica o Netplan já com o nome certo e com o renderer detectado (Server = `networkd`, Desktop = `NetworkManager`).
+Cada bloco pergunta a interface (digite o número) e aplica pelo caminho certo do sistema: **Ubuntu Desktop → `nmcli`** (NetworkManager, que é quem manda na placa) e **Ubuntu Server → Netplan/networkd**. Não use Netplan no Desktop: ele gera o perfil mas o NetworkManager não o ativa — a placa fica `UP` **sem IPv4** (sintoma clássico: só endereço `inet6 fe80::`).
 
-> O aviso `Permissions for /etc/netplan/... are too open` é **só um warning**; o `chmod 600` do bloco já o resolve.
+> Warnings `Permissions for /etc/netplan/*.yaml are too open` são inofensivos; os blocos já rodam `chmod 600 /etc/netplan/*.yaml`.
+> **Dica de colagem:** cole o bloco inteiro; quando o menu `1) 2) 3)` aparecer, digite o número e ENTER — o resto continua sozinho.
 
 ### 📍 Em S
 ```bash
 # Escolha a interface da LAN#1 (cabo direto até R1) — digite o número:
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
-REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
 
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
+if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+  sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
+       ipv4.method manual ipv4.addresses 172.16.0.2/16 \
+       ipv4.gateway 172.16.0.1 ipv4.dns 172.16.0.2
+  sudo nmcli con up frc-lan1
+else                                                   # Ubuntu SERVER -> netplan
+  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: $REND
+  renderer: networkd
   ethernets:
     $LAN1:
       addresses: [172.16.0.2/16]
       nameservers: {addresses: [172.16.0.2]}
       routes: [{to: default, via: 172.16.0.1}]
 EOF
-sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
+fi
 ip -brief addr show $LAN1        # deve mostrar 172.16.0.2/16
 ```
 
 ### 📍 Em R1
 ```bash
 # Escolha 1: interface da LAN#1 (cabo direto até S). Escolha 2: adaptador USB->Eth do Lab.
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
-REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
 
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
+if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+  sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
+       ipv4.method manual ipv4.addresses 172.16.0.1/16
+  sudo nmcli con add type ethernet ifname $LAB con-name frc-lab ipv4.method auto
+  sudo nmcli con up frc-lan1 && sudo nmcli con up frc-lab
+else                                                   # Ubuntu SERVER -> netplan
+  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: $REND
+  renderer: networkd
   ethernets:
     $LAN1:
       addresses: [172.16.0.1/16]
     $LAB:
       dhcp4: true
 EOF
-sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
+fi
 ip -brief addr show $LAN1 $LAB   # 172.16.0.1/16 + IP do Lab (DHCP)
 ```
 
 ### 📍 Em R2
 ```bash
 # Escolha a interface da LAN#2 (cabo até o roteador-switch com X e Y):
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
-REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
 
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
+if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+  sudo nmcli con add type ethernet ifname $LAN2 con-name frc-lan2 \
+       ipv4.method manual ipv4.addresses 192.168.0.1/24
+  sudo nmcli con up frc-lan2
+else                                                   # Ubuntu SERVER -> netplan
+  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: $REND
+  renderer: networkd
   ethernets:
     $LAN2:
       addresses: [192.168.0.1/24]
 EOF
-sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
+fi
 ip -brief addr show $LAN2        # deve mostrar 192.168.0.1/24
 ```
 
@@ -223,11 +241,14 @@ ls /etc/netplan/
 #    Se existir 00-installer-config.yaml ou similar tratando a MESMA interface,
 #    remova a interface de lá (ou apague o arquivo se ele só tiver ela).
 
-# 3) O renderer certo está rodando?
-systemctl is-active systemd-networkd NetworkManager
-#    Ubuntu SERVER  -> systemd-networkd ativo: use  renderer: networkd  (como no tutorial)
-#    Ubuntu DESKTOP -> NetworkManager ativo: troque a linha para  renderer: NetworkManager
-#    (ou ative o networkd:  sudo systemctl enable --now systemd-networkd)
+# 3) É Ubuntu Desktop? Então a placa é do NetworkManager — configure com nmcli
+#    (netplan gera o perfil mas o NM não ativa; a placa fica UP sem IPv4):
+systemctl is-active NetworkManager && {
+  sudo nmcli con add type ethernet ifname <iface> con-name frc-lan \
+       ipv4.method manual ipv4.addresses <IP>/<mask>
+  sudo nmcli con up frc-lan
+  nmcli con show --active
+}
 
 # 4) Reaplique vendo os erros de verdade:
 sudo netplan --debug apply
@@ -350,8 +371,8 @@ Confira com `ip route` — cada máquina deve ficar assim:
 
 ```bash
 # Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
 
 # Source NAT: todo mundo sai para a Internet com o IP de R1
 sudo iptables -t nat -A POSTROUTING -o $LAB -j MASQUERADE
@@ -396,7 +417,7 @@ subnet 192.168.0.0 netmask 255.255.255.0 {
 EOF
 
 # Escolha a interface da LAN#2 (digite o número):
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
 
 echo "INTERFACESv4=\"$LAN2\"" | sudo tee /etc/default/isc-dhcp-server
 sudo systemctl restart isc-dhcp-server && sudo systemctl enable isc-dhcp-server
@@ -418,8 +439,8 @@ ping -c 2 8.8.8.8     # Internet via NAT de R1
 ### 📍 Em R1
 ```bash
 # Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
 
 sudo systemctl enable --now smcroute
 sudo smcroutectl add $LAN1 239.10.4.0/24 $LAB    # perfil LAN  -> Z/W no Lab
@@ -429,7 +450,7 @@ sudo smcroutectl add $LAN1 239.20.4.0/24 ppp0    # perfil WAN  -> LAN#2 via WAN
 ### 📍 Em R2
 ```bash
 # Escolha a interface da LAN#2:
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
 
 sudo systemctl enable --now smcroute
 sudo smcroutectl add ppp0 239.20.4.0/24 $LAN2
