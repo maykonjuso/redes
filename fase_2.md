@@ -29,7 +29,7 @@ graph LR
 - Perfil detectado pelo IP do cliente: `192.168.0.x` → **WAN115K** (239.20.4.x, vídeo LD), resto → **LAN** (239.10.4.x, vídeo original).
 - Regra WAN115K: **um canal por vez**; streaming inicia com o 1º espectador e para com o último.
 
-> Placeholders: `LAN1` = interface de S na LAN#1. Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
+> Blocos que dependem do PC começam com um `select` que lista as interfaces e pede o número (igual à Fase 1). Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
 
 ---
 
@@ -52,7 +52,10 @@ sudo chown -R iptv:iptv /opt/miniiptv
 Rota multicast de saída (os pacotes 239.x devem sair pela LAN#1):
 
 ```bash
-sudo ip route add 239.0.0.0/8 dev LAN1
+# Escolha a interface da LAN#1 (digite o número):
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+
+sudo ip route add 239.0.0.0/8 dev $LAN1
 ```
 
 ---
