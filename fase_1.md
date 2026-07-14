@@ -1,442 +1,221 @@
-# Tutorial — Fase 1: Infraestrutura Mini-IPTV (Ubuntu 22.04, Grupo 4)
+# Fase 1 — Infraestrutura de Rede (Mini-IPTV, Grupo 4)
 
-Runbook direto: siga a ordem, rode os comandos na máquina indicada, valide e siga.
+Ubuntu 22.04 em todas as máquinas. Siga os passos na ordem. Cada bloco diz em qual máquina rodar.
 
-## Topologia e endereços
+## Topologia
 
-```mermaid
-graph TB
-    INET(("Internet"))
-    subgraph LAB["Rede do Laboratório (DHCP do Lab)"]
-        Z["Z — cliente LAN"]
-        W["W — cliente LAN"]
-    end
-    subgraph LAN1["LAN #1 — 172.16.0.0/16 (cabo direto S↔R1)"]
-        S["S — 172.16.0.2<br/>DNS · SMTP · VLC Server · backend"]
-        R1["R1 — 172.16.0.1<br/>WEB/API Gateway · SNAT/DNAT"]
-    end
-    subgraph WAN["WAN — enlace PPP serial 115200 bps"]
-        direction LR
-        P1("ppp0<br/>10.0.0.1") ---|"cabo serial cross RS-232"| P2("ppp0<br/>10.0.0.2")
-    end
-    subgraph LAN2["LAN #2 — 192.168.0.0/24"]
-        R2["R2 — 192.168.0.1<br/>DHCP Server"]
-        RT[["roteador em modo switch<br/>(portas LAN · DHCP desligado)"]]
-        X["X — DHCP .100–.200"]
-        Y["Y — DHCP .100–.200"]
-    end
-    INET --- LAB
-    LAB ---|"USB→Ethernet (único acesso externo)"| R1
-    S ---|"patch cord direto"| R1
-    R1 --- P1
-    P2 --- R2
-    R2 --- RT
-    RT --- X
-    RT --- Y
+```
+S (172.16.0.2) ──cabo──> R1 (172.16.0.1)  ......... LAN#1  172.16.0.0/16
+                          R1 ──USB-Eth──> rede do Lab (Internet, Z e W)
+                          R1 ──serial 115200──> R2  WAN    10.0.0.1 / 10.0.0.2
+R2 (192.168.0.1) ──switch──> X, Y  ................ LAN#2  192.168.0.0/24 (DHCP .100-.200)
 ```
 
-- DNS/SMTP/VLC/backend em **S** · WEB/API Gateway/NAT em **R1** · DHCP em **R2**
-- Multicast: `239.10.4.x` (LAN/Z-W) e `239.20.4.x` (WAN115K/X-Y)
-- Domínio: `grupo4.unb`
-
-**Fluxos multicast (Grupo 4):**
-
-```mermaid
-graph LR
-    S["S<br/>VLC Server"]
-    R1["R1"]
-    R2["R2"]
-    ZW["Z, W<br/>(Lab)"]
-    XY["X, Y<br/>(LAN #2)"]
-    S -->|"239.10.4.c (HD)"| R1 -->|"USB→Eth"| ZW
-    S -->|"239.20.4.c (LD)"| R1 -->|"ppp0 · 115200 bps"| R2 --> XY
-```
-
-> ## ✅ Caminho recomendado: `scripts/setup-rede.sh`
->
-> Leve o arquivo para cada máquina (pendrive/`scp`) e rode **como arquivo** (nunca cole o conteúdo no terminal):
->
-> ```bash
-> sudo bash setup-rede.sh
-> ```
->
-> Ele cobre os passos **2, 3, 5, 6 (NAT), 7 (DHCP), 8 (multicast) e 9 (tc)**: pergunta o papel (S/R1/R2/X-Y), **detecta interfaces e porta serial sozinho** (só pergunta se houver mais de uma opção), **limpa qualquer estrago de tentativas anteriores** (perfis `frc-*` do nmcli, netplan órfão, pppd zumbi), aplica pelo caminho certo (Desktop=nmcli / Server=netplan), **verifica se o IP realmente entrou** e usa fallback direto se não entrou, cria o comando `frc-ppp` e, se você responder `s`, sobe a WAN e aplica rotas+NAT+multicast+tc com validação por ping no final. **Rodar de novo é seguro** — ele limpa e reaplica.
->
-> Ordem no lab: rode em **R2** primeiro (responda `s` para WAN), depois **R1** (responda `s`), depois **S**; X/Y é só plugar. Com o script, os passos 2–9 abaixo servem de referência/estudo; siga direto para o **passo 10 (DNS)**.
->
-> **Se preferir manual (passos A/B):** no A você olha `ip -brief link` e **digita** a variável (ex.: `LAN1=enp0s31f6`); no B cola o bloco. ⚠️ Nunca cole A e B juntos — bloco com variável vazia cria configuração quebrada (erro `No suitable device found`). Mesmo terminal para A e B.
-
-## Índice por máquina
-
-Todo comando aparece sob um subtítulo `📍 Em <máquina>` — use o outline do editor para pular direto.
-
-| Máquina | Passos em que ela roda comandos |
-|---|---|
-| **S** | 0 · 2 · 5 (validar) · 8 (teste) · 10 · 11 |
-| **R1** | 0 · 2 · 3 · 4 · 5 · 6 · 8 · 9 · 12 |
-| **R2** | 0 · 2 · 3 · 4 · 5 · 7 · 8 |
-| **X / Y** | 0 · 7 (validar) · 8 (teste) · 11 (Thunderbird) · 13 |
-
----
-
-## 0. Instalar pacotes — 📍 cada bloco na máquina indicada no comentário
-
-### 📍 Em TODAS as máquinas
-```bash
-sudo apt update
-```
-
-### 📍 Em S
-```bash
-sudo apt install -y bind9 bind9utils dnsutils postfix dovecot-imapd mailutils iperf
-```
-> Na tela do postfix: escolha **"Internet Site"**, mail name: `grupo4.unb`.
-
-### 📍 Em R1
-```bash
-sudo apt install -y ppp smcroute apache2 iptables iptables-persistent isc-dhcp-client
-```
-
-### 📍 Em R2
-```bash
-sudo apt install -y ppp smcroute isc-dhcp-server
-```
-
-### 📍 Em X e Y
-```bash
-sudo apt install -y vlc thunderbird iperf
-```
-
----
-
-## 1. Cabeamento — 📍 físico (todas as máquinas)
-
-Material do grupo: **7 PCs + 1 roteador doméstico** (usado só como switch) + adaptadores USB→Eth + cabo serial cross.
-
-| PC | Papel | Conexão |
+| Máquina | IP | Roda o quê |
 |---|---|---|
-| PC1 | S | cabo Ethernet **direto** até R1 (LAN#1 tem só 2 hosts — dispensa switch; auto-MDIX resolve) |
-| PC2 | R1 | Eth nativa ↔ S · adaptador USB→Eth ↔ rede do Lab · serial ↔ R2 |
-| PC3 | R2 | Eth ↔ porta LAN do roteador · serial ↔ R1 |
-| PC4/PC5 | X, Y | Eth ↔ portas LAN do roteador |
-| PC6/PC7 | Z, W | Eth ↔ rede do Lab |
-| Roteador | switch da LAN#2 | **só portas LAN** (WAN vazia) e **DHCP desligado** |
+| S | 172.16.0.2/16 | DNS, e-mail, VLC/backend |
+| R1 | 172.16.0.1/16 + Lab (DHCP) + 10.0.0.1 | WEB/gateway, NAT, tc |
+| R2 | 192.168.0.1/24 + 10.0.0.2 | DHCP, multicast |
+| X, Y | via DHCP | clientes |
 
-1. **Antes de montar**: acesse a administração do roteador e **desabilite o servidor DHCP dele** — quem entrega IP na LAN#2 é o R2 (requisito do projeto). Não use a porta WAN/Internet do roteador.
-2. Ligue S ↔ R1 com patch cord direto (`LAN1` nas duas pontas).
-3. Adaptador USB→Ethernet de R1 na rede do Lab (só R1 toca o Lab!).
-4. R2, X e Y nas portas LAN do roteador (é a LAN#2).
-5. Cabo serial **cross RS-232** entre R1 e R2.
+**Antes de começar**, descubra o nome da placa de rede em cada máquina:
 
-Valide em cada máquina: `ip -brief link` → interfaces `UP`.
-> Se X/Y pegarem IP que **não** seja da faixa `192.168.0.100–200` depois do passo 7, o DHCP do roteador ainda está ligado — desative-o.
+```bash
+ip a
+```
+
+Anote o nome (ex.: `enp0s31f6`, `enx00e04c...`). Nos comandos abaixo, troque `IFACE` por esse nome. Em R1 são duas placas: a nativa (`IFACE`) e o adaptador USB (`IFACE_LAB`).
+
+## Índice
+
+| Passo | O quê | Onde |
+|---|---|---|
+| [1](#1-pacotes) | Pacotes | todas |
+| [2](#2-cabos) | Cabos | físico |
+| [3](#3-ips) | IPs | S, R1, R2 |
+| [4](#4-roteamento) | Ativar roteamento | R1, R2 |
+| [5](#5-ppp) | WAN PPP 115200 | R2, depois R1 |
+| [6](#6-rotas) | Rotas | R1, R2 |
+| [7](#7-nat) | NAT (Internet p/ todos) | R1 |
+| [8](#8-dhcp) | DHCP | R2 |
+| [9](#9-multicast) | Multicast | R1, R2 |
+| [10](#10-tc) | Controle de banda (tc) | R1 |
+| [11](#11-dns) | DNS | S |
+| [12](#12-e-mail) | E-mail seguro | S + X |
+| [13](#13-web) | WEB / API Gateway | R1 |
+| [14](#14-verificação) | Verificação final | X |
+
+> Alternativa: `sudo bash scripts/setup-rede.sh` faz os passos 3–13 sozinho. Este tutorial é o caminho manual, útil para entender e para a prova oral.
 
 ---
 
-## 2. IPs estáticos — 📍 em S, em R1 e em R2 (cada bloco na sua máquina)
+## 1. Pacotes
 
-Cada bloco pergunta a interface (digite o número) e aplica pelo caminho certo do sistema: **Ubuntu Desktop → `nmcli`** (NetworkManager, que é quem manda na placa) e **Ubuntu Server → Netplan/networkd**. Não use Netplan no Desktop: ele gera o perfil mas o NetworkManager não o ativa — a placa fica `UP` **sem IPv4** (sintoma clássico: só endereço `inet6 fe80::`).
+Com cada máquina ainda com Internet (rede do Lab):
 
-> Warnings `Permissions for /etc/netplan/*.yaml are too open` são inofensivos; os blocos já rodam `chmod 600 /etc/netplan/*.yaml`.
-
-### 📍 Em S
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
+# S
+sudo apt update && sudo apt install -y bind9 dnsutils postfix dovecot-imapd mailutils iperf
+# (postfix: escolha "Internet Site", mail name: grupo4.unb)
 ```
 
-**B)** Agora cole o bloco inteiro:
 ```bash
-IF=${LAN1:-$LAN2}
-if [ ! -e "/sys/class/net/$IF" ]; then
-  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
-elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
-  sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
-       ipv4.method manual ipv4.addresses 172.16.0.2/16 \
-       ipv4.gateway 172.16.0.1 ipv4.dns 172.16.0.2
-  sudo nmcli con up frc-lan1
-else                                                   # Ubuntu SERVER -> netplan
-  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $LAN1:
-      addresses: [172.16.0.2/16]
-      nameservers: {addresses: [172.16.0.2]}
-      routes: [{to: default, via: 172.16.0.1}]
-EOF
-  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
-fi
-ip -brief addr show $LAN1        # deve mostrar 172.16.0.2/16
+# R1
+sudo apt update && sudo apt install -y ppp smcroute apache2 iptables-persistent
 ```
 
-### 📍 Em R1
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
-LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
+# R2
+sudo apt update && sudo apt install -y ppp smcroute isc-dhcp-server
 ```
 
-**B)** Agora cole o bloco inteiro:
 ```bash
-IF=${LAN1:-$LAN2}
-if [ ! -e "/sys/class/net/$IF" ]; then
-  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
-elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
-  sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
-       ipv4.method manual ipv4.addresses 172.16.0.1/16
-  sudo nmcli con add type ethernet ifname $LAB con-name frc-lab ipv4.method auto
-  sudo nmcli con up frc-lan1 && sudo nmcli con up frc-lab
-else                                                   # Ubuntu SERVER -> netplan
-  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $LAN1:
-      addresses: [172.16.0.1/16]
-    $LAB:
-      dhcp4: true
-EOF
-  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
-fi
-ip -brief addr show $LAN1 $LAB   # 172.16.0.1/16 + IP do Lab (DHCP)
-```
-
-### 📍 Em R2
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
-```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
-```
-
-**B)** Agora cole o bloco inteiro:
-```bash
-IF=${LAN1:-$LAN2}
-if [ ! -e "/sys/class/net/$IF" ]; then
-  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
-elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
-  sudo nmcli con add type ethernet ifname $LAN2 con-name frc-lan2 \
-       ipv4.method manual ipv4.addresses 192.168.0.1/24
-  sudo nmcli con up frc-lan2
-else                                                   # Ubuntu SERVER -> netplan
-  sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $LAN2:
-      addresses: [192.168.0.1/24]
-EOF
-  sudo chmod 600 /etc/netplan/*.yaml && sudo netplan apply
-fi
-ip -brief addr show $LAN2        # deve mostrar 192.168.0.1/24
-```
-
-**Validar:**
-
-### 📍 Em cada uma (S, R1, R2)
-```bash
-ip -brief addr                 # confira o IP da tabela do plano de endereçamento
-```
-
-### 📍 Em S
-```bash
-ping -c 2 172.16.0.1           # alcança R1 pelo cabo direto
-```
-
-### 📍 Em R1
-```bash
-ping -c 2 8.8.8.8              # Internet via rede do Lab
-```
-
-### Se o IP não aparecer em `ip -brief addr`, siga esta ordem:
-
-```bash
-# 1) O nome da interface no YAML é o real?
-ip -brief link                          # compare com o que está no arquivo
-sudo nano /etc/netplan/01-frc.yaml      # corrija LAN1 -> nome real (ex.: enp2s0)
-
-# 2) Há outro YAML antigo conflitando? (o instalador cria um)
-ls /etc/netplan/
-#    Se existir 00-installer-config.yaml ou similar tratando a MESMA interface,
-#    remova a interface de lá (ou apague o arquivo se ele só tiver ela).
-
-# 3) É Ubuntu Desktop? Então a placa é do NetworkManager — configure com nmcli
-#    (netplan gera o perfil mas o NM não ativa; a placa fica UP sem IPv4).
-#    Exemplo para R2 (troque interface e IP conforme a máquina):
-sudo nmcli con add type ethernet ifname enp0s31f6 con-name frc-lan \
-     ipv4.method manual ipv4.addresses 192.168.0.1/24
-sudo nmcli con up frc-lan
-nmcli con show --active
-
-# 4) Reaplique vendo os erros de verdade:
-sudo netplan --debug apply
-ip -brief addr                          # agora o IP deve aparecer
-```
-
-**Desbloqueio imediato (se precisar continuar o lab agora):** o comando abaixo seta o IP na hora, sem Netplan (perde no reboot — depois conserte o YAML):
-```bash
-# exemplo em S (use a interface real):
-sudo ip addr add 172.16.0.2/16 dev enp2s0 && sudo ip link set enp2s0 up
+# X e Y
+sudo apt update && sudo apt install -y vlc thunderbird iperf
 ```
 
 ---
 
-## 3. Habilitar roteamento — 📍 em R1 **e** em R2 (rodar nos dois)
+## 2. Cabos
 
-### 📍 Em R1 e em R2 (mesmo bloco nos dois)
+1. Cabo direto entre **S** e **R1** (LAN#1 — só 2 máquinas, não precisa de switch).
+2. Adaptador USB-Ethernet de **R1** na rede do Lab (só R1 toca o Lab).
+3. **R2**, **X** e **Y** nas portas LAN do roteador-switch. **Desligue o DHCP do roteador** na administração dele antes (quem dá IP é o R2).
+4. Cabo serial **cross RS-232** entre R1 e R2.
+
+Confira: `ip a` → a placa conectada aparece com `state UP`.
+
+---
+
+## 3. IPs
+
+Comandos diretos — funcionam na hora. (Se reiniciar a máquina, rode de novo; para fixar, veja o Anexo A.)
+
 ```bash
-sudo tee /etc/sysctl.d/99-router.conf >/dev/null <<'EOF'
-net.ipv4.ip_forward=1
-net.ipv4.conf.all.mc_forwarding=1
-EOF
-sudo sysctl --system | grep -E 'ip_forward|mc_forwarding'
+# S
+sudo ip addr add 172.16.0.2/16 dev IFACE
+sudo ip link set IFACE up
+sudo ip route add default via 172.16.0.1
+```
+
+```bash
+# R1 — placa nativa (LAN#1)
+sudo ip addr add 172.16.0.1/16 dev IFACE
+sudo ip link set IFACE up
+# R1 — adaptador USB (Lab): pega IP por DHCP
+sudo dhclient IFACE_LAB
+```
+
+```bash
+# R2
+sudo ip addr add 192.168.0.1/24 dev IFACE
+sudo ip link set IFACE up
+```
+
+**Testar:**
+
+```bash
+# em S:
+ping -c 2 172.16.0.1     # R1 responde
+# em R1:
+ping -c 2 8.8.8.8        # Internet via Lab
 ```
 
 ---
 
-## 4. Enlace WAN PPP a 115200 bps — 📍 em R2 primeiro, depois em R1
+## 4. Roteamento
 
-### 📍 Em R2 (rode primeiro — fica aguardando)
-**A)** Veja a porta serial e **digite** a variável:
+R1 e R2 precisam repassar pacotes entre interfaces:
+
 ```bash
-ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null
-SERIAL=/dev/ttyUSB0     # <-- TROQUE pela porta real
+# R1 e R2 (mesmo comando nos dois)
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo sysctl -w net.ipv4.conf.all.mc_forwarding=1
 ```
-
-**B)** Cole o bloco:
-```bash
-sudo pppd $SERIAL 115200 noauth local nocrtscts persist nodetach
-```
-
-### 📍 Em R1 (depois do R2)
-**A)** Veja a porta serial e **digite** a variável:
-```bash
-ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null
-SERIAL=/dev/ttyUSB0     # <-- TROQUE pela porta real
-```
-
-**B)** Cole o bloco:
-```bash
-sudo pppd $SERIAL 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
-```
-
-**Validar:**
-
-### 📍 Em R1
-```bash
-ip -brief addr show ppp0       # 10.0.0.1 peer 10.0.0.2
-ping -c 3 10.0.0.2             # RTT alto é normal (enlace lento)
-```
-
-> Deixe os `pppd` rodando (use `tmux` ou outro terminal). Parar: `Ctrl+C` ou `sudo pkill pppd`.
-> Não sobe? Confira o device (`dmesg | grep tty`) e se o cabo é cross/null-modem.
 
 ---
 
-## 5. Rotas unicast — 📍 em R1 e em R2 (validação em S)
+## 5. PPP
 
-### 📍 Em R1
+Enlace WAN serial a 115200 bps. A porta serial é `/dev/ttyS0` (nativa) ou `/dev/ttyUSB0` (adaptador USB-serial) — veja com `ls /dev/ttyS0 /dev/ttyUSB0`.
+
 ```bash
-# rota para a LAN#2 (que fica atrás de R2)
+# R2 PRIMEIRO (fica aguardando; deixe este terminal aberto)
+sudo pppd /dev/ttyS0 115200 noauth local nocrtscts persist nodetach
+```
+
+```bash
+# R1 depois (deixe este terminal aberto também)
+sudo pppd /dev/ttyS0 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
+```
+
+O que cada opção faz: `115200` = velocidade exigida; `10.0.0.1:10.0.0.2` = IP local:remoto (só no R1); `noauth` = sem senha; `local nocrtscts` = cabo direto sem controle de modem; `persist` = reconecta se cair; `nodetach` = mostra o log na tela.
+
+**Testar (em R1):**
+
+```bash
+ip a show ppp0           # deve ter 10.0.0.1
+ping -c 3 10.0.0.2       # R2 responde (demora é normal: link lento)
+```
+
+Parar o PPP: `Ctrl+C` ou `sudo pkill pppd`. Não sobe? Confira a porta (`dmesg | grep tty`) e se o cabo é cross/null-modem.
+
+---
+
+## 6. Rotas
+
+Cada lado precisa saber chegar na rede do outro:
+
+```bash
+# R1: como chegar na LAN#2
 sudo ip route add 192.168.0.0/24 via 10.0.0.2
 ```
 
-### 📍 Em R2
 ```bash
-# rota de volta para a LAN#1 + saída para Internet via R1
+# R2: como voltar para a LAN#1 e sair para a Internet
 sudo ip route add 172.16.0.0/16 via 10.0.0.1
 sudo ip route add default via 10.0.0.1
 ```
 
-**Validar (fim-a-fim):**
+**Testar (em S):**
 
-### 📍 Em S
 ```bash
-ping -c 2 10.0.0.2 && ping -c 2 192.168.0.1
+ping -c 2 10.0.0.2       # atravessa a WAN
+ping -c 2 192.168.0.1    # chega na LAN#2
 ```
 
-### Tabela de rotas esperada por máquina
-
-Confira com `ip route` — cada máquina deve ficar assim:
-
-**S** (tudo sai por R1):
-| Destino | Via (gateway) | Interface | Para quê |
-|---|---|---|---|
-| `172.16.0.0/16` | — (conectada) | LAN1 | LAN#1 local |
-| `239.0.0.0/8` | — (conectada) | LAN1 | multicast sai pela LAN#1 (Fase 2) |
-| `default` | `172.16.0.1` (R1) | LAN1 | WAN, LAN#2 e Internet |
-
-**R1** (o centro da rede — conhece todos os caminhos):
-| Destino | Via (gateway) | Interface | Para quê |
-|---|---|---|---|
-| `172.16.0.0/16` | — (conectada) | LAN1 | LAN#1 (S) |
-| `10.0.0.2` | — (ponto-a-ponto) | ppp0 | WAN → R2 |
-| `192.168.0.0/24` | `10.0.0.2` (R2) | ppp0 | LAN#2 (X, Y) pela WAN |
-| `<rede do Lab>` | — (conectada) | LAB | Z, W e gateway do Lab |
-| `default` | `<gw do Lab>` (DHCP) | LAB | Internet |
-
-**R2**:
-| Destino | Via (gateway) | Interface | Para quê |
-|---|---|---|---|
-| `192.168.0.0/24` | — (conectada) | LAN2 | LAN#2 local (X, Y) |
-| `10.0.0.1` | — (ponto-a-ponto) | ppp0 | WAN → R1 |
-| `172.16.0.0/16` | `10.0.0.1` (R1) | ppp0 | LAN#1 (S) pela WAN |
-| `default` | `10.0.0.1` (R1) | ppp0 | Internet (via SNAT em R1) |
-
-**X e Y** (tudo via DHCP do R2 — não configurar nada à mão):
-| Destino | Via (gateway) | Interface | Para quê |
-|---|---|---|---|
-| `192.168.0.0/24` | — (conectada) | LAN2 | LAN#2 local |
-| `default` | `192.168.0.1` (R2) | LAN2 | LAN#1, WAN e Internet |
-
-> Regra de ouro para diagnosticar: **todo caminho de ida precisa do caminho de volta**. Se `S → X` falha, confira a rota `192.168.0.0/24` em R1 **e** a rota `172.16.0.0/16` em R2.
+Regra de ouro: se o ping vai e não volta, falta a rota de retorno do outro lado.
 
 ---
 
-## 6. NAT e firewall — 📍 só em R1
+## 7. NAT
 
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
+Só R1 tem Internet. O NAT faz todo mundo sair pelo IP dele:
+
 ```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
-LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
-```
-
-**B)** Agora cole o bloco inteiro:
-```bash
-# Source NAT: todo mundo sai para a Internet com o IP de R1
-sudo iptables -t nat -A POSTROUTING -o $LAB -j MASQUERADE
-
-# Liberar encaminhamento
-sudo iptables -A FORWARD -i $LAN1 -o $LAB -j ACCEPT
-sudo iptables -A FORWARD -i ppp0 -o $LAB -j ACCEPT
+# R1 (troque IFACE e IFACE_LAB pelos nomes reais)
+sudo iptables -t nat -A POSTROUTING -o IFACE_LAB -j MASQUERADE
+sudo iptables -A FORWARD -i IFACE -o IFACE_LAB -j ACCEPT
+sudo iptables -A FORWARD -i ppp0 -o IFACE_LAB -j ACCEPT
 sudo iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-# Destination NAT (exemplo p/ demonstração): Lab:8080 -> S:80
-sudo iptables -t nat -A PREROUTING -i $LAB -p tcp --dport 8080 -j DNAT --to-destination 172.16.0.2:80
+# DNAT (exigido no projeto): quem acessa R1:8080 pelo Lab cai no WEB de S
+sudo iptables -t nat -A PREROUTING -i IFACE_LAB -p tcp --dport 8080 -j DNAT --to-destination 172.16.0.2:80
 sudo iptables -A FORWARD -p tcp -d 172.16.0.2 --dport 80 -j ACCEPT
 
-# Persistir
-sudo netfilter-persistent save
+sudo netfilter-persistent save   # guarda as regras p/ o reboot
 ```
 
-**Validar:**
-
-### 📍 Em S (ou em X, depois do passo 7)
-```bash
-ping -c 2 8.8.8.8              # Internet via NAT de R1
-```
+**Testar (em S):** `ping -c 2 8.8.8.8` — agora S tem Internet via R1.
 
 ---
 
-## 7. DHCP — 📍 só em R2 (validação em X e Y)
+## 8. DHCP
+
+R2 entrega IP, gateway e DNS para X e Y:
 
 ```bash
+# R2 — escreve a configuração
 sudo tee /etc/dhcp/dhcpd.conf >/dev/null <<'EOF'
 option domain-name "grupo4.unb";
 option domain-name-servers 172.16.0.2;
@@ -451,116 +230,76 @@ subnet 192.168.0.0 netmask 255.255.255.0 {
 }
 EOF
 
+# escuta só na placa da LAN#2 (troque IFACE)
+echo 'INTERFACESv4="IFACE"' | sudo tee /etc/default/isc-dhcp-server
+sudo systemctl restart isc-dhcp-server
 ```
 
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
-```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
-```
+**Testar (em X):** plugue o cabo e rode `ip a` → IP entre 192.168.0.100 e .200. Depois `ping -c 2 172.16.0.2` (S, através da WAN) e `ping -c 2 8.8.8.8` (Internet).
 
-**B)** Agora cole o bloco inteiro:
-```bash
-echo "INTERFACESv4=\"$LAN2\"" | sudo tee /etc/default/isc-dhcp-server
-sudo systemctl restart isc-dhcp-server && sudo systemctl enable isc-dhcp-server
-```
-
-**Validar** (Desktop pega IP sozinho ao plugar o cabo):
-
-### 📍 Em X e em Y
-```bash
-ip -brief addr        # deve ter 192.168.0.10x/24
-ping -c 2 172.16.0.2  # alcança S através da WAN
-ping -c 2 8.8.8.8     # Internet via NAT de R1
-```
+> IP fora da faixa .100-.200? O DHCP do roteador-switch ainda está ligado — desative-o.
 
 ---
 
-## 8. Roteamento multicast (smcroute) — 📍 em R1 e em R2 (teste: S envia, X recebe)
+## 9. Multicast
 
-### 📍 Em R1
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
-```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
-LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
-```
+Rotas estáticas de multicast (Grupo 4: `239.10.4.x` = LAN rápida, `239.20.4.x` = WAN lenta):
 
-**B)** Agora cole o bloco inteiro:
 ```bash
+# R1 (troque IFACE = placa da LAN#1, IFACE_LAB = adaptador USB)
 sudo systemctl enable --now smcroute
-sudo smcroutectl add $LAN1 239.10.4.0/24 $LAB    # perfil LAN  -> Z/W no Lab
-sudo smcroutectl add $LAN1 239.20.4.0/24 ppp0    # perfil WAN  -> LAN#2 via WAN
+sudo smcroutectl add IFACE 239.10.4.0/24 IFACE_LAB   # canais HD -> Z/W no Lab
+sudo smcroutectl add IFACE 239.20.4.0/24 ppp0        # canais LD -> LAN#2 pela WAN
 ```
 
-### 📍 Em R2
-**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-ip -brief link     # anote o nome (ignore lo, docker0, wl*)
-LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
-```
-
-**B)** Agora cole o bloco inteiro:
-```bash
+# R2 (troque IFACE = placa da LAN#2)
 sudo systemctl enable --now smcroute
-sudo smcroutectl add ppp0 239.20.4.0/24 $LAN2
-sudo smcroutectl join $LAN2 239.20.4.1
+sudo smcroutectl add ppp0 239.20.4.0/24 IFACE
+sudo smcroutectl join IFACE 239.20.4.1
 ```
 
-**Validar (teste sem VLC):**
+**Testar sem VLC** (S transmite, X recebe):
 
-### 📍 Em X (deixe rodando — é o receptor)
 ```bash
+# em X (deixe rodando):
 iperf -s -u -B 239.20.4.1 -i 1
-```
-
-### 📍 Em S (o emissor)
-```bash
-iperf -c 239.20.4.1 -u -T 5 -t 15 -b 80k -i 1
-```
-
-### 📍 Em R1 e em R2 (contadores devem subir)
-```bash
+# em S:
+iperf -c 239.20.4.1 -u -T 5 -t 15 -b 80k
+# em R1 e R2, os contadores devem subir:
 sudo smcroutectl show
 ```
 
-> Persistir: escreva as rotas em `/etc/smcroute.conf` (`mroute from <iface-LAN1> group 239.20.4.0/24 to ppp0`, com o nome real) e reinicie o serviço.
-
 ---
 
-## 9. Controle de banda com tc — 📍 só em R1 (interface ppp0)
+## 10. tc
+
+Limita a WAN a 115200 bps (exigência do projeto — demonstra a API de traffic control):
 
 ```bash
-# Limitar a 115200 bps no sentido S -> X/Y (interface ppp0 de R1)
+# R1
 sudo tc qdisc add dev ppp0 root tbf rate 115200bit burst 4kb latency 400ms
-tc -s qdisc show dev ppp0
+tc -s qdisc show dev ppp0    # confere
 ```
 
-**Validar:**
+`tbf` = balde de tokens; `rate` = teto de banda; `burst` = rajada permitida; `latency` = tempo máximo na fila.
 
-### 📍 Em X (receptor)
-```bash
-iperf -s
-```
-
-### 📍 Em S (emissor — a taxa medida deve ficar ~115 kbps)
-```bash
-iperf -c 192.168.0.101      # troque pelo IP de X (veja em X: ip -brief addr)
-```
-
-Remover o limite: `sudo tc qdisc del dev ppp0 root` (em R1).
+**Testar:** `iperf -s` em X, `iperf -c 192.168.0.1xx` em S → ~115 kbps. Remover: `sudo tc qdisc del dev ppp0 root`.
 
 ---
 
-## 10. DNS (bind9) — 📍 só em S
+## 11. DNS
+
+S resolve os nomes da intranet e repassa o resto para a Internet:
 
 ```bash
-# Zonas
+# S — declara as zonas
 sudo tee -a /etc/bind/named.conf.local >/dev/null <<'EOF'
 zone "grupo4.unb" { type master; file "/etc/bind/db.grupo4.unb"; };
 zone "16.172.in-addr.arpa" { type master; file "/etc/bind/db.172.16"; };
 EOF
 
+# zona direta (nome -> IP)
 sudo tee /etc/bind/db.grupo4.unb >/dev/null <<'EOF'
 $TTL 604800
 @   IN  SOA s.grupo4.unb. admin.grupo4.unb. ( 2 604800 86400 2419200 604800 )
@@ -570,6 +309,7 @@ r1  IN  A   172.16.0.1
 r2  IN  A   192.168.0.1
 EOF
 
+# zona reversa (IP -> nome)
 sudo tee /etc/bind/db.172.16 >/dev/null <<'EOF'
 $TTL 604800
 @   IN  SOA s.grupo4.unb. admin.grupo4.unb. ( 2 604800 86400 2419200 604800 )
@@ -578,36 +318,42 @@ $TTL 604800
 1.0 IN  PTR r1.grupo4.unb.
 EOF
 
-# Recursão + forwarders: edite /etc/bind/named.conf.options e, dentro de options { }, adicione:
-#   allow-query { 172.16.0.0/16; 192.168.0.0/24; 10.0.0.0/30; localhost; };
-#   recursion yes;
-#   forwarders { 8.8.8.8; };
-sudo nano /etc/bind/named.conf.options
+# permite consultas da intranet e repassa nomes externos ao 8.8.8.8
+sudo tee /etc/bind/named.conf.options >/dev/null <<'EOF'
+options {
+    directory "/var/cache/bind";
+    allow-query { 172.16.0.0/16; 192.168.0.0/24; 10.0.0.0/30; localhost; };
+    recursion yes;
+    forwarders { 8.8.8.8; };
+    dnssec-validation no;
+    listen-on-v6 { any; };
+};
+EOF
 
-# Checar e reiniciar
 sudo named-checkconf && sudo named-checkzone grupo4.unb /etc/bind/db.grupo4.unb
 sudo systemctl restart bind9
 ```
 
-**Validar:**
+**Testar (de qualquer máquina):**
 
-### 📍 Em qualquer máquina
 ```bash
-nslookup s.grupo4.unb 172.16.0.2     # 172.16.0.2
-nslookup 172.16.0.1 172.16.0.2       # r1.grupo4.unb (reverso)
-nslookup google.com 172.16.0.2       # externo via forwarder
+nslookup s.grupo4.unb 172.16.0.2      # 172.16.0.2
+nslookup 172.16.0.1 172.16.0.2        # r1.grupo4.unb (reverso)
+nslookup google.com 172.16.0.2        # nome externo (forwarder)
 ```
 
 ---
 
-## 11. SMTP/IMAP com TLS — 📍 servidor em S · Thunderbird em X
+## 12. E-mail
+
+SMTP (postfix) + IMAP (dovecot) com TLS em S, demonstrado no Thunderbird:
 
 ```bash
-# Certificado autoassinado
+# S — certificado TLS autoassinado
 sudo openssl req -new -x509 -days 365 -nodes -subj "/CN=s.grupo4.unb" \
   -out /etc/ssl/certs/mail.pem -keyout /etc/ssl/private/mail.key
 
-# Postfix
+# postfix
 sudo postconf -e "myhostname = s.grupo4.unb" \
              -e "mydomain = grupo4.unb" \
              -e "mydestination = \$myhostname, grupo4.unb, localhost" \
@@ -617,84 +363,111 @@ sudo postconf -e "myhostname = s.grupo4.unb" \
              -e "smtpd_tls_security_level=may"
 sudo systemctl restart postfix
 
-# Dovecot (IMAP + TLS)
+# dovecot (IMAP + TLS)
 sudo sed -i 's|^ssl_cert =.*|ssl_cert = </etc/ssl/certs/mail.pem|;
              s|^ssl_key =.*|ssl_key = </etc/ssl/private/mail.key|;
              s|^ssl =.*|ssl = yes|' /etc/dovecot/conf.d/10-ssl.conf
 sudo systemctl restart dovecot
 
-# Caixas de teste
+# caixas de e-mail (uma conta linux = uma caixa)
 sudo adduser aluno1
 sudo adduser aluno2
 ```
 
-**Thunderbird (em X):** conta `aluno1@grupo4.unb` → configuração manual:
-- IMAP `s.grupo4.unb` porta 143 **STARTTLS** · SMTP `s.grupo4.unb` porta 25 **STARTTLS** · usuário `aluno1`
-- Aceite a exceção do certificado autoassinado.
+**Testar (em S):**
 
-**Validar:**
-
-### 📍 Em S
 ```bash
 echo "teste" | mail -s "oi" aluno2@grupo4.unb
-sudo tail -n 5 /var/log/mail.log     # status=sent
+sudo tail -n 5 /var/log/mail.log     # deve mostrar status=sent
 ```
 
-### 📍 Em X (Thunderbird)
-Enviar de `aluno1` → `aluno2` e ver a mensagem chegar.
+**Thunderbird (em X):** conta `aluno1@grupo4.unb` → configuração manual → IMAP `s.grupo4.unb` porta 143 STARTTLS · SMTP `s.grupo4.unb` porta 25 STARTTLS · usuário `aluno1`. Aceite o certificado. Envie de aluno1 para aluno2 e veja chegar.
 
 ---
 
-## 12. WEB + API Gateway (Apache proxy reverso) — 📍 só em R1 (validação em X)
+## 13. WEB
+
+Apache em R1: página da intranet + proxy reverso (API Gateway) para o backend em S:
 
 ```bash
-sudo a2enmod proxy proxy_http headers ssl
+# R1
+sudo a2enmod proxy proxy_http ssl
 echo '<h1>Intranet Grupo 4 - Mini-IPTV</h1>' | sudo tee /var/www/html/index.html
 
-# Proxy reverso: dentro do <VirtualHost *:80> de /etc/apache2/sites-available/000-default.conf
-sudo sed -i 's|</VirtualHost>|\tProxyPreserveHost On\n\tProxyPass /api http://172.16.0.2:80/api\n\tProxyPassReverse /api http://172.16.0.2:80/api\n</VirtualHost>|' \
-  /etc/apache2/sites-available/000-default.conf
-
+sudo tee /etc/apache2/sites-available/miniiptv.conf >/dev/null <<'EOF'
+<VirtualHost *:80>
+    ServerName r1.grupo4.unb
+    DocumentRoot /var/www/html
+    ProxyPreserveHost On
+    ProxyPass        /api http://172.16.0.2:8000/api
+    ProxyPassReverse /api http://172.16.0.2:8000/api
+</VirtualHost>
+EOF
+sudo a2dissite 000-default && sudo a2ensite miniiptv
 sudo systemctl restart apache2
 ```
 
-**Validar:**
-
-### 📍 Em X
-```bash
-curl http://r1.grupo4.unb/        # página da intranet
-curl -I http://r1.grupo4.unb/api  # 503 é normal até o backend (Fase 2) existir
-```
+**Testar (em X):** `curl http://r1.grupo4.unb/` → mostra a página. (`/api` dá 503 até o backend da Fase 2 subir — normal.)
 
 ---
 
-## 13. Bateria final de verificação — 📍 rodar em X
+## 14. Verificação
 
-### 📍 Em X
+Tudo de uma vez, a partir de X:
+
 ```bash
-ping -c 2 192.168.0.1 && ping -c 2 10.0.0.1 && ping -c 2 172.16.0.2 && ping -c 2 8.8.8.8
-nslookup s.grupo4.unb
-curl -s http://r1.grupo4.unb/ | head -1
+ping -c 2 192.168.0.1      # R2 (gateway local)
+ping -c 2 10.0.0.1         # R1 pela WAN
+ping -c 2 172.16.0.2       # S (fim-a-fim)
+ping -c 2 8.8.8.8          # Internet (NAT)
+nslookup s.grupo4.unb      # DNS
+curl http://r1.grupo4.unb/ # WEB
 ```
 
-Além disso: multicast recebendo em X (teste do passo 8) e banda unicast S→X limitada a ~115 kbps (teste do passo 9).
-
-Tudo ok → Fase 1 concluída. Guarde as saídas (`comando | tee ~/projeto-frc/capturas/arquivo.txt`) como evidência para o relatório e o vídeo.
+Mais o multicast (passo 9), a banda ~115 kbps (passo 10) e o e-mail no Thunderbird (passo 12). Tudo respondendo = Fase 1 concluída. Guarde as saídas (`comando | tee captura.txt`) para o relatório.
 
 ---
 
 ## Problemas comuns
 
-| Sintoma | Causa provável | Correção |
+| Sintoma | Causa | Solução |
 |---|---|---|
-| ppp0 não sobe | device errado / cabo não é cross | `dmesg \| grep tty`; usar cabo null-modem |
-| ping cruza WAN mas não volta | falta rota de retorno | passo 5 |
-| roteador não repassa | `ip_forward=0` | passo 3 |
-| só R1 tem Internet | falta MASQUERADE/FORWARD | passo 6 |
-| X/Y sem IP | `INTERFACESv4` errado ou R2 sem IP fixo | passos 2 e 7 |
-| multicast não chega | rota smcroute ausente / TTL=1 no emissor | passo 8; emissor com TTL ≥ 16 |
-| DNS REFUSED | `allow-query` não inclui a rede | passo 10 |
-| e-mail "Relay access denied" | rede fora de `mynetworks` | passo 11 |
-| `netplan apply` reclama | TAB no YAML ou permissão | usar espaços; `chmod 600` |
-| nmcli: `No suitable device found ... mismatching interface name` | perfil criado com variável vazia (colou A+B juntos) | `nmcli con show`, `sudo nmcli con delete <perfil frc->` (repita p/ duplicados) e refaça A depois B |
-| Desktop: placa `UP` mas sem IPv4 após `netplan apply` | NetworkManager ignora o perfil do netplan | use o caminho nmcli (o bloco B do passo 2 escolhe sozinho) |
+| Máquinas na mesma LAN não se pingam | cabo, placa DOWN ou IP errado | `ip a`; refaça o passo 3 na placa certa |
+| IP sumiu | reboot (o `ip addr` não persiste) | rode o passo 3 de novo (ou Anexo A) |
+| ppp0 não sobe | porta errada ou cabo não é cross | `dmesg \| grep tty`; cabo null-modem |
+| ping vai e não volta | falta rota de retorno | passo 6 no outro roteador |
+| roteador não repassa | esqueceu o passo 4 | `sysctl -w net.ipv4.ip_forward=1` |
+| só R1 tem Internet | falta NAT | passo 7 |
+| X/Y sem IP ou IP errado | DHCP do roteador-switch ligado, ou `INTERFACESv4` errado | desligue-o; confira o passo 8 |
+| multicast não chega | rota smcroute faltando ou TTL 1 no emissor | passo 9; emissor com `--ttl 16` |
+| DNS REFUSED | rede fora do `allow-query` | passo 11 |
+| e-mail Relay denied | rede fora do `mynetworks` | passo 12 |
+
+---
+
+## Anexo A — fixar os IPs (opcional)
+
+Os comandos `ip addr` do passo 3 somem no reboot. Para fixar no Ubuntu Desktop (NetworkManager):
+
+```bash
+# S
+sudo nmcli con add type ethernet ifname IFACE con-name frc ipv4.method manual \
+     ipv4.addresses 172.16.0.2/16 ipv4.gateway 172.16.0.1 ipv4.dns 172.16.0.2
+sudo nmcli con up frc
+```
+
+```bash
+# R1 (LAN#1; o adaptador do Lab o NetworkManager já cuida com DHCP)
+sudo nmcli con add type ethernet ifname IFACE con-name frc ipv4.method manual \
+     ipv4.addresses 172.16.0.1/16
+sudo nmcli con up frc
+```
+
+```bash
+# R2
+sudo nmcli con add type ethernet ifname IFACE con-name frc ipv4.method manual \
+     ipv4.addresses 192.168.0.1/24
+sudo nmcli con up frc
+```
+
+Deu erro "already exists"? `sudo nmcli con delete frc` e rode de novo. As rotas dos passos 4 e 6 e as regras do 9 e 10 também são voláteis — no dia da apresentação, rode os passos 4–6 e 9–10 após ligar as máquinas (ou use `scripts/setup-rede.sh`, que aplica tudo).
