@@ -52,15 +52,19 @@ graph LR
     S -->|"239.20.4.c (LD)"| R1 -->|"ppp0 · 115200 bps"| R2 --> XY
 ```
 
-> **Como funciona a escolha de interface/porta:** todo bloco que depende de algo específico do PC começa com um `select`, que **lista o que existe naquela máquina e pergunta o número**:
+> ## ✅ Caminho recomendado: `scripts/setup-rede.sh`
 >
-> ```
-> 1) enp2s0
-> 2) enx00e04c001122
-> #? 1          <- você digita o número e ENTER
+> Leve o arquivo para cada máquina (pendrive/`scp`) e rode **como arquivo** (nunca cole o conteúdo no terminal):
+>
+> ```bash
+> sudo bash setup-rede.sh
 > ```
 >
-> A escolha fica numa variável (`$LAN1`, `$LAB`, `$LAN2`, `$SERIAL`) usada pelos comandos seguintes **do mesmo bloco**. ⚠️ Rode o bloco inteiro **no mesmo terminal** — se abrir outro terminal, rode o `select` de novo.
+> Ele cobre os passos **2, 3, 5, 6 (NAT), 7 (DHCP), 8 (multicast) e 9 (tc)**: pergunta o papel (S/R1/R2/X-Y), **detecta interfaces e porta serial sozinho** (só pergunta se houver mais de uma opção), **limpa qualquer estrago de tentativas anteriores** (perfis `frc-*` do nmcli, netplan órfão, pppd zumbi), aplica pelo caminho certo (Desktop=nmcli / Server=netplan), **verifica se o IP realmente entrou** e usa fallback direto se não entrou, cria o comando `frc-ppp` e, se você responder `s`, sobe a WAN e aplica rotas+NAT+multicast+tc com validação por ping no final. **Rodar de novo é seguro** — ele limpa e reaplica.
+>
+> Ordem no lab: rode em **R2** primeiro (responda `s` para WAN), depois **R1** (responda `s`), depois **S**; X/Y é só plugar. Com o script, os passos 2–9 abaixo servem de referência/estudo; siga direto para o **passo 10 (DNS)**.
+>
+> **Se preferir manual (passos A/B):** no A você olha `ip -brief link` e **digita** a variável (ex.: `LAN1=enp0s31f6`); no B cola o bloco. ⚠️ Nunca cole A e B juntos — bloco com variável vazia cria configuração quebrada (erro `No suitable device found`). Mesmo terminal para A e B.
 
 ## Índice por máquina
 
@@ -134,14 +138,20 @@ Valide em cada máquina: `ip -brief link` → interfaces `UP`.
 Cada bloco pergunta a interface (digite o número) e aplica pelo caminho certo do sistema: **Ubuntu Desktop → `nmcli`** (NetworkManager, que é quem manda na placa) e **Ubuntu Server → Netplan/networkd**. Não use Netplan no Desktop: ele gera o perfil mas o NetworkManager não o ativa — a placa fica `UP` **sem IPv4** (sintoma clássico: só endereço `inet6 fe80::`).
 
 > Warnings `Permissions for /etc/netplan/*.yaml are too open` são inofensivos; os blocos já rodam `chmod 600 /etc/netplan/*.yaml`.
-> **Dica de colagem:** cole o bloco inteiro; quando o menu `1) 2) 3)` aparecer, digite o número e ENTER — o resto continua sozinho.
 
 ### 📍 Em S
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha a interface da LAN#1 (cabo direto até R1) — digite o número:
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
+```
 
-if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+**B)** Agora cole o bloco inteiro:
+```bash
+IF=${LAN1:-$LAN2}
+if [ ! -e "/sys/class/net/$IF" ]; then
+  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
+elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
   sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
        ipv4.method manual ipv4.addresses 172.16.0.2/16 \
        ipv4.gateway 172.16.0.1 ipv4.dns 172.16.0.2
@@ -163,12 +173,19 @@ ip -brief addr show $LAN1        # deve mostrar 172.16.0.2/16
 ```
 
 ### 📍 Em R1
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha 1: interface da LAN#1 (cabo direto até S). Escolha 2: adaptador USB->Eth do Lab.
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
+LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
+```
 
-if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+**B)** Agora cole o bloco inteiro:
+```bash
+IF=${LAN1:-$LAN2}
+if [ ! -e "/sys/class/net/$IF" ]; then
+  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
+elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
   sudo nmcli con add type ethernet ifname $LAN1 con-name frc-lan1 \
        ipv4.method manual ipv4.addresses 172.16.0.1/16
   sudo nmcli con add type ethernet ifname $LAB con-name frc-lab ipv4.method auto
@@ -190,11 +207,18 @@ ip -brief addr show $LAN1 $LAB   # 172.16.0.1/16 + IP do Lab (DHCP)
 ```
 
 ### 📍 Em R2
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha a interface da LAN#2 (cabo até o roteador-switch com X e Y):
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
+```
 
-if systemctl is-active --quiet NetworkManager; then    # Ubuntu DESKTOP -> nmcli
+**B)** Agora cole o bloco inteiro:
+```bash
+IF=${LAN1:-$LAN2}
+if [ ! -e "/sys/class/net/$IF" ]; then
+  echo "ERRO: interface '$IF' não existe — refaça o passo A (ip -brief link)"
+elif systemctl is-active --quiet NetworkManager; then   # Ubuntu DESKTOP -> nmcli
   sudo nmcli con add type ethernet ifname $LAN2 con-name frc-lan2 \
        ipv4.method manual ipv4.addresses 192.168.0.1/24
   sudo nmcli con up frc-lan2
@@ -242,13 +266,12 @@ ls /etc/netplan/
 #    remova a interface de lá (ou apague o arquivo se ele só tiver ela).
 
 # 3) É Ubuntu Desktop? Então a placa é do NetworkManager — configure com nmcli
-#    (netplan gera o perfil mas o NM não ativa; a placa fica UP sem IPv4):
-systemctl is-active NetworkManager && {
-  sudo nmcli con add type ethernet ifname <iface> con-name frc-lan \
-       ipv4.method manual ipv4.addresses <IP>/<mask>
-  sudo nmcli con up frc-lan
-  nmcli con show --active
-}
+#    (netplan gera o perfil mas o NM não ativa; a placa fica UP sem IPv4).
+#    Exemplo para R2 (troque interface e IP conforme a máquina):
+sudo nmcli con add type ethernet ifname enp0s31f6 con-name frc-lan \
+     ipv4.method manual ipv4.addresses 192.168.0.1/24
+sudo nmcli con up frc-lan
+nmcli con show --active
 
 # 4) Reaplique vendo os erros de verdade:
 sudo netplan --debug apply
@@ -279,18 +302,26 @@ sudo sysctl --system | grep -E 'ip_forward|mc_forwarding'
 ## 4. Enlace WAN PPP a 115200 bps — 📍 em R2 primeiro, depois em R1
 
 ### 📍 Em R2 (rode primeiro — fica aguardando)
+**A)** Veja a porta serial e **digite** a variável:
 ```bash
-# Escolha a porta serial do cabo PPP (digite o número):
-select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
+ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null
+SERIAL=/dev/ttyUSB0     # <-- TROQUE pela porta real
+```
 
+**B)** Cole o bloco:
+```bash
 sudo pppd $SERIAL 115200 noauth local nocrtscts persist nodetach
 ```
 
 ### 📍 Em R1 (depois do R2)
+**A)** Veja a porta serial e **digite** a variável:
 ```bash
-# Escolha a porta serial do cabo PPP (digite o número):
-select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
+ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null
+SERIAL=/dev/ttyUSB0     # <-- TROQUE pela porta real
+```
 
+**B)** Cole o bloco:
+```bash
 sudo pppd $SERIAL 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
 ```
 
@@ -369,11 +400,15 @@ Confira com `ip route` — cada máquina deve ficar assim:
 
 ## 6. NAT e firewall — 📍 só em R1
 
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
+LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
+```
 
+**B)** Agora cole o bloco inteiro:
+```bash
 # Source NAT: todo mundo sai para a Internet com o IP de R1
 sudo iptables -t nat -A POSTROUTING -o $LAB -j MASQUERADE
 
@@ -416,9 +451,16 @@ subnet 192.168.0.0 netmask 255.255.255.0 {
 }
 EOF
 
-# Escolha a interface da LAN#2 (digite o número):
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
+```
 
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
+```bash
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
+```
+
+**B)** Agora cole o bloco inteiro:
+```bash
 echo "INTERFACESv4=\"$LAN2\"" | sudo tee /etc/default/isc-dhcp-server
 sudo systemctl restart isc-dhcp-server && sudo systemctl enable isc-dhcp-server
 ```
@@ -437,21 +479,29 @@ ping -c 2 8.8.8.8     # Internet via NAT de R1
 ## 8. Roteamento multicast (smcroute) — 📍 em R1 e em R2 (teste: S envia, X recebe)
 
 ### 📍 Em R1
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
-select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN1=enp2s0     # <-- TROQUE pelo nome real (placa da LAN#1)
+LAB=enx001122aabbcc     # <-- TROQUE pelo nome real (adaptador USB->Eth do Lab)
+```
 
+**B)** Agora cole o bloco inteiro:
+```bash
 sudo systemctl enable --now smcroute
 sudo smcroutectl add $LAN1 239.10.4.0/24 $LAB    # perfil LAN  -> Z/W no Lab
 sudo smcroutectl add $LAN1 239.20.4.0/24 ppp0    # perfil WAN  -> LAN#2 via WAN
 ```
 
 ### 📍 Em R2
+**A)** Veja os nomes e **digite** a(s) variável(is) — uma linha de cada vez, com ENTER:
 ```bash
-# Escolha a interface da LAN#2:
-select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN2=$LAN2"
+ip -brief link     # anote o nome (ignore lo, docker0, wl*)
+LAN2=enp0s31f6     # <-- TROQUE pelo nome real (placa da LAN#2)
+```
 
+**B)** Agora cole o bloco inteiro:
+```bash
 sudo systemctl enable --now smcroute
 sudo smcroutectl add ppp0 239.20.4.0/24 $LAN2
 sudo smcroutectl join $LAN2 239.20.4.1
@@ -495,7 +545,7 @@ iperf -s
 
 ### 📍 Em S (emissor — a taxa medida deve ficar ~115 kbps)
 ```bash
-iperf -c <ip-de-X>
+iperf -c 192.168.0.101      # troque pelo IP de X (veja em X: ip -brief addr)
 ```
 
 Remover o limite: `sudo tc qdisc del dev ppp0 root` (em R1).
@@ -646,3 +696,5 @@ Tudo ok → Fase 1 concluída. Guarde as saídas (`comando | tee ~/projeto-frc/c
 | DNS REFUSED | `allow-query` não inclui a rede | passo 10 |
 | e-mail "Relay access denied" | rede fora de `mynetworks` | passo 11 |
 | `netplan apply` reclama | TAB no YAML ou permissão | usar espaços; `chmod 600` |
+| nmcli: `No suitable device found ... mismatching interface name` | perfil criado com variável vazia (colou A+B juntos) | `nmcli con show`, `sudo nmcli con delete <perfil frc->` (repita p/ duplicados) e refaça A depois B |
+| Desktop: placa `UP` mas sem IPv4 após `netplan apply` | NetworkManager ignora o perfil do netplan | use o caminho nmcli (o bloco B do passo 2 escolhe sozinho) |
