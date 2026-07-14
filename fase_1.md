@@ -149,13 +149,15 @@ Sem isso o roteador não repassa pacotes entre as placas. (Idempotente — não 
 
 Enlace WAN serial a 115200 bps. A porta é `/dev/ttyS0` (nativa) ou `/dev/ttyUSB0` (adaptador USB-serial): `ls /dev/ttyS0 /dev/ttyUSB0`.
 
+Cada lado declara seu par `IP_LOCAL:IP_REMOTO` — por isso a ordem inverte entre R2 e R1. Com os dois explícitos, o ppp0 já sobe com IP (sem depender de negociação).
+
 ### Em R2 — PRIMEIRO (fica aguardando; deixe o terminal aberto)
 ```bash
 # limpar: mata pppd antigo
 sudo pkill pppd; sleep 1
 
-# aplicar
-sudo pppd /dev/ttyS0 115200 noauth local nocrtscts persist nodetach
+# aplicar (10.0.0.2 = IP do R2, 10.0.0.1 = do R1)
+sudo pppd /dev/ttyS0 115200 10.0.0.2:10.0.0.1 noauth local nocrtscts persist nodetach
 ```
 
 ### Em R1 — depois (deixe o terminal aberto também)
@@ -163,13 +165,16 @@ sudo pppd /dev/ttyS0 115200 noauth local nocrtscts persist nodetach
 # limpar
 sudo pkill pppd; sleep 1
 
-# aplicar
+# aplicar (10.0.0.1 = IP do R1, 10.0.0.2 = do R2)
 sudo pppd /dev/ttyS0 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
 ```
 
-Opções: `115200` = velocidade exigida · `10.0.0.1:10.0.0.2` = IP local:remoto (só no R1) · `noauth` = sem senha · `local nocrtscts` = cabo direto · `persist` = reconecta · `nodetach` = log na tela.
+Opções: `115200` = velocidade exigida · `LOCAL:REMOTO` = endereços do enlace · `noauth` = sem senha · `local nocrtscts` = cabo direto · `persist` = reconecta · `nodetach` = log na tela.
 
-**Testar — em R1:** `ip a show ppp0` (tem 10.0.0.1) e `ping -c 3 10.0.0.2` (demora é normal, link lento).
+**Testar — em R1:** `ip a show ppp0` → `inet 10.0.0.1 peer 10.0.0.2/32`; depois `ping -c 3 10.0.0.2` (demora é normal, link lento).
+**Testar — em R2:** `ip a show ppp0` → `inet 10.0.0.2 peer 10.0.0.1/32`.
+
+> ppp0 existe mas **sem IP**? Um dos lados subiu sem declarar `LOCAL:REMOTO` — mate (`sudo pkill pppd`) e rode os comandos acima nos dois lados.
 
 ---
 
@@ -469,6 +474,7 @@ Mais o multicast (passo 9), a banda ~115 kbps (passo 10) e o e-mail no Thunderbi
 | Máquinas na mesma LAN não se pingam | cabo, placa DOWN ou IP errado | `ip a`; refaça o passo 3 na placa certa |
 | IP sumiu | reboot (o `ip addr` não persiste) | rode o passo 3 de novo (ou Anexo A) |
 | ppp0 não sobe | porta errada ou cabo não é cross | `dmesg \| grep tty`; cabo null-modem |
+| ppp0 sobe **sem IP** | um lado sem `LOCAL:REMOTO` no pppd | passo 5: R2 usa `10.0.0.2:10.0.0.1`, R1 usa `10.0.0.1:10.0.0.2` |
 | ping vai e não volta | falta rota de retorno | passo 6 no outro roteador |
 | roteador não repassa | esqueceu o passo 4 | `sysctl -w net.ipv4.ip_forward=1` |
 | só R1 tem Internet | falta NAT | passo 7 |
