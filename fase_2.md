@@ -61,7 +61,7 @@ Rota multicast de saída (os pacotes 239.x devem sair pela LAN#1):
 
 ```bash
 # Escolha a interface da LAN#1 (digite o número):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
 
 sudo ip route add 239.0.0.0/8 dev $LAN1
 ```
