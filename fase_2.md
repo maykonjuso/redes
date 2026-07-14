@@ -31,6 +31,14 @@ graph LR
 
 > Blocos que dependem do PC começam com um `select` que lista as interfaces e pede o número (igual à Fase 1). Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
 
+## Índice por máquina
+
+| Máquina | Passos em que ela roda comandos |
+|---|---|
+| **S** | 0 · 1 · 2 · 3 · 7 (conferências) |
+| **R1** | 4 · 5 · 7 (ocupação da WAN) |
+| **X / Y / Z / W** | 4 (validar) · 6 · 7 · 8 |
+
 ---
 
 ## 0. Pacotes — 📍 só em S
@@ -309,6 +317,7 @@ systemctl is-active miniiptv     # active
 
 ## 3. Testar a API antes do gateway — 📍 em S
 
+### 📍 Em S
 ```bash
 # Obter token JWT (OAuth2 password grant)
 TOK=$(curl -s -X POST http://localhost:8000/api/token \
@@ -328,8 +337,9 @@ curl -s http://localhost:8000/api/channels
 
 O frontend fala **HTTPS com R1**; R1 repassa em **HTTP interno** para S (como na Figura 2 do enunciado).
 
+### 📍 Em R1
 ```bash
-# Em R1 — certificado autoassinado + vhost SSL
+# certificado autoassinado + vhost SSL
 sudo a2enmod ssl proxy proxy_http headers
 sudo openssl req -new -x509 -days 365 -nodes -subj "/CN=r1.grupo4.unb" \
   -out /etc/ssl/certs/r1.pem -keyout /etc/ssl/private/r1.key
@@ -352,7 +362,9 @@ sudo a2ensite miniiptv-ssl
 sudo systemctl reload apache2
 ```
 
-**Validar (de X):**
+**Validar:**
+
+### 📍 Em X
 ```bash
 curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1
 ```
@@ -362,8 +374,8 @@ curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1
 
 ## 5. Frontend (página estática) — 📍 só em R1
 
+### 📍 Em R1
 ```bash
-# Em R1
 sudo tee /var/www/html/iptv.html >/dev/null <<'EOF'
 <!doctype html><meta charset="utf-8"><title>Mini-IPTV Grupo 4</title>
 <style>body{font-family:sans-serif;max-width:720px;margin:2em auto}li{margin:.6em 0}
@@ -461,33 +473,35 @@ flowchart TD
     H -- sim --> I["Encerra cvlc — WAN liberada:<br/>próximo cliente escolhe o canal"]
 ```
 
+### 📍 Em X e Y (navegador — regra WAN115K: um canal por vez)
+1. **Em X:** assistir canal 1 → ok (recebe `239.20.4.1`, versão LD).
+2. **Em Y:** assistir canal 2 → deve receber **erro 409** "WAN ocupada: canal 1".
+3. **Em Y:** assistir canal 1 → ok (mesmo fluxo multicast que X).
+4. X e Y saem do canal 1 → streaming para; agora Y pode escolher o canal 2.
+
+### 📍 Em Z e W (navegador — regra LAN: canais simultâneos, qualidade original)
+- **Em Z:** assistir canal 1 (`239.10.4.1`, HD) e, ao mesmo tempo, **em W:** canal 2 (`239.10.4.2`, HD) → ambos funcionam.
+
+### 📍 Em S (streaming inicia/para conforme o interesse)
 ```bash
-# --- Regra WAN115K: um canal por vez ---
-# Em X: assistir canal 1 -> ok (recebe 239.20.4.1, versão LD)
-# Em Y: assistir canal 2 -> deve receber ERRO 409 "WAN ocupada: canal 1"
-# Em Y: assistir canal 1 -> ok (mesmo fluxo multicast que X)
-# X e Y saem do canal 1 -> streaming para; agora Y pode escolher canal 2
-
-# --- Regra LAN: canais simultâneos, qualidade original ---
-# Em Z: assistir canal 1 (239.10.4.1, HD)  |  Em W: assistir canal 2 (239.10.4.2, HD) -> ambos ok
-
-# --- Streaming inicia/para conforme interesse ---
-# Em S, antes de alguém assistir:
-pgrep -a vlc          # vazio
-# Após "Assistir":  aparece cvlc ... dst=239.20.4.1
-# Após todos saírem: processo some
+pgrep -a vlc     # antes de alguém assistir: vazio
+                 # após "Assistir": aparece cvlc ... dst=239.20.4.1
+                 # após todos saírem: o processo some
 ```
 
-Visão do admin:
-
+### 📍 Em qualquer máquina (visão do admin)
 ```bash
 TOK=$(curl -sk https://r1.grupo4.unb/api/token -d username=admin -d password=admin123 | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 curl -sk -H "Authorization: Bearer $TOK" https://r1.grupo4.unb/api/admin/status | python3 -m json.tool
-# Ocupação da WAN (em R1):  tc -s qdisc show dev ppp0   e   sudo smcroutectl show
 ```
 
-Upload de vídeo novo (admin):
+### 📍 Em R1 (ocupação da WAN e fluxos multicast ativos)
+```bash
+tc -s qdisc show dev ppp0
+sudo smcroutectl show
+```
 
+### 📍 Em qualquer máquina (upload de vídeo novo, como admin)
 ```bash
 curl -sk -H "Authorization: Bearer $TOK" \
   -F "file=@novo_video.mp4" -F "channel=3" https://r1.grupo4.unb/api/videos
@@ -498,12 +512,18 @@ curl -sk -H "Authorization: Bearer $TOK" \
 
 ## 8. Bateria final — 📍 X e Z (clientes) · R1/R2 (contadores)
 
+### 📍 Em X (perfil WAN115K)
 ```bash
-# De X (WAN115K):
-curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1   # token
-# frontend lista canais com perfil WAN115K; VLC reproduz 239.20.4.1:5004 (vídeo LD)
-# De Z (LAN): VLC reproduz 239.10.4.1:5004 (vídeo HD) enquanto W vê outro canal
-# Em R1/R2: sudo smcroutectl show  -> contadores dos grupos crescendo
+curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1   # token OK
+```
+Frontend lista canais com perfil **WAN115K**; VLC reproduz `239.20.4.1:5004` (vídeo LD).
+
+### 📍 Em Z (perfil LAN)
+VLC reproduz `239.10.4.1:5004` (vídeo HD) enquanto W assiste outro canal.
+
+### 📍 Em R1 e em R2
+```bash
+sudo smcroutectl show      # contadores dos grupos crescendo
 ```
 
 Tudo ok → Fase 2 concluída. Evidências para o vídeo/relatório: tela do frontend com perfil, VLC reproduzindo nos dois perfis, o 409 da regra WAN, `pgrep vlc` antes/depois, `smcroutectl show`, saída do `/api/admin/status`.
