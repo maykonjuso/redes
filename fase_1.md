@@ -52,11 +52,15 @@ graph LR
     S -->|"239.20.4.c (LD)"| R1 -->|"ppp0 · 115200 bps"| R2 --> XY
 ```
 
-> **Antes de tudo:** descubra o nome real das interfaces em cada máquina com `ip -brief link` e substitua nos comandos:
-> - `LAN1` = interface Ethernet de S e de R1 no switch da LAN#1 (ex.: `enp2s0`)
-> - `LAB` = adaptador USB→Ethernet de R1 (ex.: `enx00e04c001122`)
-> - `LAN2` = interface Ethernet de R2/X/Y (ex.: `enp3s0`)
-> - `SERIAL` = porta serial (`/dev/ttyS0` nativa ou `/dev/ttyUSB0` adaptador)
+> **Como funciona a escolha de interface/porta:** todo bloco que depende de algo específico do PC começa com um `select`, que **lista o que existe naquela máquina e pergunta o número**:
+>
+> ```
+> 1) enp2s0
+> 2) enx00e04c001122
+> #? 1          <- você digita o número e ENTER
+> ```
+>
+> A escolha fica numa variável (`$LAN1`, `$LAB`, `$LAN2`, `$SERIAL`) usada pelos comandos seguintes **do mesmo bloco**. ⚠️ Rode o bloco inteiro **no mesmo terminal** — se abrir outro terminal, rode o `select` de novo.
 
 ---
 
@@ -108,47 +112,67 @@ Valide em cada máquina: `ip -brief link` → interfaces `UP`.
 
 ## 2. IPs estáticos — 📍 em S, em R1 e em R2 (cada bloco na sua máquina)
 
+Cada bloco pergunta a interface (digite o número) e aplica o Netplan já com o nome certo e com o renderer detectado (Server = `networkd`, Desktop = `NetworkManager`).
+
+> O aviso `Permissions for /etc/netplan/... are too open` é **só um warning**; o `chmod 600` do bloco já o resolve.
+
 ### Em S
 ```bash
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<'EOF'
+# Escolha a interface da LAN#1 (cabo direto até R1) — digite o número:
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+
+sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: networkd
+  renderer: $REND
   ethernets:
-    LAN1:
+    $LAN1:
       addresses: [172.16.0.2/16]
       nameservers: {addresses: [172.16.0.2]}
       routes: [{to: default, via: 172.16.0.1}]
 EOF
 sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+ip -brief addr show $LAN1        # deve mostrar 172.16.0.2/16
 ```
 
 ### Em R1
 ```bash
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<'EOF'
+# Escolha 1: interface da LAN#1 (cabo direto até S). Escolha 2: adaptador USB->Eth do Lab.
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+
+sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: networkd
+  renderer: $REND
   ethernets:
-    LAN1:
+    $LAN1:
       addresses: [172.16.0.1/16]
-    LAB:
+    $LAB:
       dhcp4: true
 EOF
 sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+ip -brief addr show $LAN1 $LAB   # 172.16.0.1/16 + IP do Lab (DHCP)
 ```
 
 ### Em R2
 ```bash
-sudo tee /etc/netplan/01-frc.yaml >/dev/null <<'EOF'
+# Escolha a interface da LAN#2 (cabo até o roteador-switch com X e Y):
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
+REND=$(systemctl is-active --quiet NetworkManager && echo NetworkManager || echo networkd)
+
+sudo tee /etc/netplan/01-frc.yaml >/dev/null <<EOF
 network:
   version: 2
-  renderer: networkd
+  renderer: $REND
   ethernets:
-    LAN2:
+    $LAN2:
       addresses: [192.168.0.1/24]
 EOF
 sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
+ip -brief addr show $LAN2        # deve mostrar 192.168.0.1/24
 ```
 
 **Validar:**
@@ -156,6 +180,35 @@ sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
 ip -brief addr                 # IPs corretos
 ping -c 2 172.16.0.1           # em S: alcança R1
 ping -c 2 8.8.8.8              # em R1: Internet via Lab
+```
+
+### Se o IP não aparecer em `ip -brief addr`, siga esta ordem:
+
+```bash
+# 1) O nome da interface no YAML é o real?
+ip -brief link                          # compare com o que está no arquivo
+sudo nano /etc/netplan/01-frc.yaml      # corrija LAN1 -> nome real (ex.: enp2s0)
+
+# 2) Há outro YAML antigo conflitando? (o instalador cria um)
+ls /etc/netplan/
+#    Se existir 00-installer-config.yaml ou similar tratando a MESMA interface,
+#    remova a interface de lá (ou apague o arquivo se ele só tiver ela).
+
+# 3) O renderer certo está rodando?
+systemctl is-active systemd-networkd NetworkManager
+#    Ubuntu SERVER  -> systemd-networkd ativo: use  renderer: networkd  (como no tutorial)
+#    Ubuntu DESKTOP -> NetworkManager ativo: troque a linha para  renderer: NetworkManager
+#    (ou ative o networkd:  sudo systemctl enable --now systemd-networkd)
+
+# 4) Reaplique vendo os erros de verdade:
+sudo netplan --debug apply
+ip -brief addr                          # agora o IP deve aparecer
+```
+
+**Desbloqueio imediato (se precisar continuar o lab agora):** o comando abaixo seta o IP na hora, sem Netplan (perde no reboot — depois conserte o YAML):
+```bash
+# exemplo em S (use a interface real):
+sudo ip addr add 172.16.0.2/16 dev enp2s0 && sudo ip link set enp2s0 up
 ```
 
 ---
@@ -176,12 +229,18 @@ sudo sysctl --system | grep -E 'ip_forward|mc_forwarding'
 
 ### Em R2 (rode primeiro — fica aguardando)
 ```bash
-sudo pppd SERIAL 115200 noauth local nocrtscts persist nodetach
+# Escolha a porta serial do cabo PPP (digite o número):
+select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
+
+sudo pppd $SERIAL 115200 noauth local nocrtscts persist nodetach
 ```
 
 ### Em R1 (outro terminal)
 ```bash
-sudo pppd SERIAL 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
+# Escolha a porta serial do cabo PPP (digite o número):
+select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
+
+sudo pppd $SERIAL 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
 ```
 
 **Validar (em R1):**
@@ -253,16 +312,20 @@ Confira com `ip route` — cada máquina deve ficar assim:
 ## 6. NAT e firewall — 📍 só em R1
 
 ```bash
+# Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+
 # Source NAT: todo mundo sai para a Internet com o IP de R1
-sudo iptables -t nat -A POSTROUTING -o LAB -j MASQUERADE
+sudo iptables -t nat -A POSTROUTING -o $LAB -j MASQUERADE
 
 # Liberar encaminhamento
-sudo iptables -A FORWARD -i LAN1 -o LAB -j ACCEPT
-sudo iptables -A FORWARD -i ppp0 -o LAB -j ACCEPT
+sudo iptables -A FORWARD -i $LAN1 -o $LAB -j ACCEPT
+sudo iptables -A FORWARD -i ppp0 -o $LAB -j ACCEPT
 sudo iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 # Destination NAT (exemplo p/ demonstração): Lab:8080 -> S:80
-sudo iptables -t nat -A PREROUTING -i LAB -p tcp --dport 8080 -j DNAT --to-destination 172.16.0.2:80
+sudo iptables -t nat -A PREROUTING -i $LAB -p tcp --dport 8080 -j DNAT --to-destination 172.16.0.2:80
 sudo iptables -A FORWARD -p tcp -d 172.16.0.2 --dport 80 -j ACCEPT
 
 # Persistir
@@ -290,7 +353,10 @@ subnet 192.168.0.0 netmask 255.255.255.0 {
 }
 EOF
 
-echo 'INTERFACESv4="LAN2"' | sudo tee /etc/default/isc-dhcp-server
+# Escolha a interface da LAN#2 (digite o número):
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
+
+echo "INTERFACESv4=\"$LAN2\"" | sudo tee /etc/default/isc-dhcp-server
 sudo systemctl restart isc-dhcp-server && sudo systemctl enable isc-dhcp-server
 ```
 
@@ -307,16 +373,23 @@ ping -c 2 8.8.8.8     # Internet via NAT de R1
 
 ### Em R1
 ```bash
+# Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
+select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
+select LAB  in $(ls /sys/class/net | grep -vE '^(lo|ppp)' | grep -v "^$LAN1$"); do break; done; echo "LAB=$LAB"
+
 sudo systemctl enable --now smcroute
-sudo smcroutectl add LAN1 239.10.4.0/24 LAB    # perfil LAN  -> Z/W no Lab
-sudo smcroutectl add LAN1 239.20.4.0/24 ppp0   # perfil WAN  -> LAN#2 via WAN
+sudo smcroutectl add $LAN1 239.10.4.0/24 $LAB    # perfil LAN  -> Z/W no Lab
+sudo smcroutectl add $LAN1 239.20.4.0/24 ppp0    # perfil WAN  -> LAN#2 via WAN
 ```
 
 ### Em R2
 ```bash
+# Escolha a interface da LAN#2:
+select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
+
 sudo systemctl enable --now smcroute
-sudo smcroutectl add ppp0 239.20.4.0/24 LAN2
-sudo smcroutectl join LAN2 239.20.4.1
+sudo smcroutectl add ppp0 239.20.4.0/24 $LAN2
+sudo smcroutectl join $LAN2 239.20.4.1
 ```
 
 **Validar (teste sem VLC):**
@@ -329,7 +402,7 @@ iperf -c 239.20.4.1 -u -T 5 -t 15 -b 80k -i 1
 sudo smcroutectl show
 ```
 
-> Persistir: escreva as rotas em `/etc/smcroute.conf` (`mroute from LAN1 group 239.20.4.0/24 to ppp0`) e reinicie o serviço.
+> Persistir: escreva as rotas em `/etc/smcroute.conf` (`mroute from <iface-LAN1> group 239.20.4.0/24 to ppp0`, com o nome real) e reinicie o serviço.
 
 ---
 
