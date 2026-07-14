@@ -29,7 +29,7 @@ graph LR
 - Perfil detectado pelo IP do cliente: `192.168.0.x` → **WAN115K** (239.20.4.x, vídeo LD), resto → **LAN** (239.10.4.x, vídeo original).
 - Regra WAN115K: **um canal por vez**; streaming inicia com o 1º espectador e para com o último.
 
-> Blocos que dependem do PC começam com um `select` que lista as interfaces e pede o número (igual à Fase 1). Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
+> Blocos que dependem do PC seguem o padrão **A/B** da Fase 1: no A você digita a variável com o nome real da interface; no B cola o bloco. Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
 
 ## Índice por máquina
 
@@ -59,10 +59,14 @@ sudo chown -R iptv:iptv /opt/miniiptv
 
 Rota multicast de saída (os pacotes 239.x devem sair pela LAN#1):
 
+**A)** Digite a variável com o nome real da placa da LAN#1:
 ```bash
-# Escolha a interface da LAN#1 (digite o número):
-select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp|docker|veth|br-)'); do break; done; echo "LAN1=$LAN1"
+ip -brief link
+LAN1=enp0s31f6     # <-- TROQUE pelo nome real
+```
 
+**B)** Cole:
+```bash
 sudo ip route add 239.0.0.0/8 dev $LAN1
 ```
 
@@ -104,9 +108,9 @@ GRUPO   = 4
 PORTA_M = 5004
 app = Flask(__name__)
 
-# canal -> {"proc": Popen, "profile": str, "addr": str}
+# (canal, perfil) -> {"proc": Popen, "addr": str}   [LAN e WAN podem coexistir no mesmo canal]
 streams = {}
-# (canal, profile) -> set(usuarios)
+# (canal, perfil) -> set(usuarios)
 viewers = {}
 
 def db():
@@ -156,7 +160,7 @@ def channels():
     prof, out = perfil(), []
     for c in db().execute("SELECT * FROM channels ORDER BY num"):
         v = db().execute("SELECT * FROM videos WHERE channel=?", (c["num"],)).fetchone()
-        ativo = c["num"] in streams
+        ativo = any(cn == c["num"] for (cn, _) in streams)
         out.append({"num": c["num"], "nome": c["nome"], "descricao": c["desc"],
                     "video": dict(v) if v else None,
                     "status": "ativo" if ativo else ("disponivel" if v else "indisponivel"),
@@ -205,20 +209,20 @@ def start_stream(canal, prof):
     proc = subprocess.Popen(["cvlc", "-I", "dummy", arq, "--loop", "--ttl", "16",
                              "--sout", f"#udp{{mux=ts,dst={addr}:{PORTA_M}}}"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    streams[canal] = {"proc": proc, "profile": prof, "addr": addr}
+    streams[(canal, prof)] = {"proc": proc, "addr": addr}
     return addr
 
 def stop_if_empty(canal, prof):
-    if not viewers.get((canal, prof)) and canal in streams and streams[canal]["profile"] == prof:
-        streams[canal]["proc"].terminate()
-        del streams[canal]
+    if not viewers.get((canal, prof)) and (canal, prof) in streams:
+        streams[(canal, prof)]["proc"].terminate()
+        del streams[(canal, prof)]
 
 @app.post("/api/channels/<int:n>/watch")
 @auth()
 def watch(n):
     prof = perfil()
     if prof == "WAN115K":
-        outro = next((c for c, s in streams.items() if s["profile"] == "WAN115K" and c != n), None)
+        outro = next((c for (c, p) in streams if p == "WAN115K" and c != n), None)
         if outro:
             return jsonify(error=f"WAN ocupada: canal {outro} em exibicao; assista-o ou aguarde",
                            canal_ativo=outro), 409
@@ -226,11 +230,11 @@ def watch(n):
     for k in list(viewers):
         if g.user in viewers[k] and k != (n, prof):
             viewers[k].discard(g.user); stop_if_empty(*k)
-    if n not in streams:
+    if (n, prof) not in streams:
         if not start_stream(n, prof):
             return jsonify(error="canal sem video"), 404
     viewers.setdefault((n, prof), set()).add(g.user)
-    addr = streams[n]["addr"]
+    addr = streams[(n, prof)]["addr"]
     m3u = f"#EXTM3U\n#EXTINF:-1,Canal {n}\nudp://@{addr}:{PORTA_M}\n"
     return jsonify(canal=n, perfil=prof, mcast=f"udp://@{addr}:{PORTA_M}", playlist=m3u)
 
@@ -258,7 +262,7 @@ def status():
     vlc = subprocess.run(["pgrep", "-a", "vlc"], capture_output=True, text=True).stdout
     return jsonify(
         usuarios_conectados={f"canal{n}/{p}": sorted(s) for (n, p), s in viewers.items() if s},
-        canais_ativos={n: {"perfil": s["profile"], "mcast": s["addr"]} for n, s in streams.items()},
+        canais_ativos={f"canal{n}/{p}": s["addr"] for (n, p), s in streams.items()},
         processos_vlc=vlc.strip().splitlines())
 
 if __name__ == "__main__":
@@ -278,7 +282,8 @@ CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, pw TEXT, role TEXT);
 CREATE TABLE IF NOT EXISTS channels(num INTEGER PRIMARY KEY, nome TEXT, desc TEXT);
 CREATE TABLE IF NOT EXISTS videos(channel INTEGER PRIMARY KEY, arq_hd TEXT, arq_ld TEXT, meta TEXT);
 """)
-for u, p, r in [("admin", "admin123", "admin"), ("aluno1", "senha1", "user"), ("aluno2", "senha2", "user")]:
+for u, p, r in [("admin", "admin123", "admin"), ("aluno1", "senha1", "user"), ("aluno2", "senha2", "user"),
+                ("aluno3", "senha3", "user"), ("aluno4", "senha4", "user")]:
     c.execute("INSERT OR REPLACE INTO users VALUES(?,?,?)", (u, generate_password_hash(p), r))
 # canais iniciais + vínculo com os vídeos do passo 1
 canais = [(1, "Filme", "Canal de filmes", "filme"), (2, "Aula", "Canal de aulas", "aula"), (3, "Show", "Canal de shows", "show")]
