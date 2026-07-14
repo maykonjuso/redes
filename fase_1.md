@@ -62,25 +62,44 @@ graph LR
 >
 > A escolha fica numa variável (`$LAN1`, `$LAB`, `$LAN2`, `$SERIAL`) usada pelos comandos seguintes **do mesmo bloco**. ⚠️ Rode o bloco inteiro **no mesmo terminal** — se abrir outro terminal, rode o `select` de novo.
 
+## Índice por máquina
+
+Todo comando aparece sob um subtítulo `📍 Em <máquina>` — use o outline do editor para pular direto.
+
+| Máquina | Passos em que ela roda comandos |
+|---|---|
+| **S** | 0 · 2 · 5 (validar) · 8 (teste) · 10 · 11 |
+| **R1** | 0 · 2 · 3 · 4 · 5 · 6 · 8 · 9 · 12 |
+| **R2** | 0 · 2 · 3 · 4 · 5 · 7 · 8 |
+| **X / Y** | 0 · 7 (validar) · 8 (teste) · 11 (Thunderbird) · 13 |
+
 ---
 
 ## 0. Instalar pacotes — 📍 cada bloco na máquina indicada no comentário
 
+### 📍 Em TODAS as máquinas
 ```bash
-# TODAS
 sudo apt update
+```
 
-# S
+### 📍 Em S
+```bash
 sudo apt install -y bind9 bind9utils dnsutils postfix dovecot-imapd mailutils iperf
-#   postfix: escolha "Internet Site", mail name: grupo4.unb
+```
+> Na tela do postfix: escolha **"Internet Site"**, mail name: `grupo4.unb`.
 
-# R1
+### 📍 Em R1
+```bash
 sudo apt install -y ppp smcroute apache2 iptables iptables-persistent isc-dhcp-client
+```
 
-# R2
+### 📍 Em R2
+```bash
 sudo apt install -y ppp smcroute isc-dhcp-server
+```
 
-# X e Y
+### 📍 Em X e Y
+```bash
 sudo apt install -y vlc thunderbird iperf
 ```
 
@@ -116,7 +135,7 @@ Cada bloco pergunta a interface (digite o número) e aplica o Netplan já com o 
 
 > O aviso `Permissions for /etc/netplan/... are too open` é **só um warning**; o `chmod 600` do bloco já o resolve.
 
-### Em S
+### 📍 Em S
 ```bash
 # Escolha a interface da LAN#1 (cabo direto até R1) — digite o número:
 select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
@@ -136,7 +155,7 @@ sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
 ip -brief addr show $LAN1        # deve mostrar 172.16.0.2/16
 ```
 
-### Em R1
+### 📍 Em R1
 ```bash
 # Escolha 1: interface da LAN#1 (cabo direto até S). Escolha 2: adaptador USB->Eth do Lab.
 select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
@@ -157,7 +176,7 @@ sudo chmod 600 /etc/netplan/01-frc.yaml && sudo netplan apply
 ip -brief addr show $LAN1 $LAB   # 172.16.0.1/16 + IP do Lab (DHCP)
 ```
 
-### Em R2
+### 📍 Em R2
 ```bash
 # Escolha a interface da LAN#2 (cabo até o roteador-switch com X e Y):
 select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
@@ -176,10 +195,20 @@ ip -brief addr show $LAN2        # deve mostrar 192.168.0.1/24
 ```
 
 **Validar:**
+
+### 📍 Em cada uma (S, R1, R2)
 ```bash
-ip -brief addr                 # IPs corretos
-ping -c 2 172.16.0.1           # em S: alcança R1
-ping -c 2 8.8.8.8              # em R1: Internet via Lab
+ip -brief addr                 # confira o IP da tabela do plano de endereçamento
+```
+
+### 📍 Em S
+```bash
+ping -c 2 172.16.0.1           # alcança R1 pelo cabo direto
+```
+
+### 📍 Em R1
+```bash
+ping -c 2 8.8.8.8              # Internet via rede do Lab
 ```
 
 ### Se o IP não aparecer em `ip -brief addr`, siga esta ordem:
@@ -215,6 +244,7 @@ sudo ip addr add 172.16.0.2/16 dev enp2s0 && sudo ip link set enp2s0 up
 
 ## 3. Habilitar roteamento — 📍 em R1 **e** em R2 (rodar nos dois)
 
+### 📍 Em R1 e em R2 (mesmo bloco nos dois)
 ```bash
 sudo tee /etc/sysctl.d/99-router.conf >/dev/null <<'EOF'
 net.ipv4.ip_forward=1
@@ -227,7 +257,7 @@ sudo sysctl --system | grep -E 'ip_forward|mc_forwarding'
 
 ## 4. Enlace WAN PPP a 115200 bps — 📍 em R2 primeiro, depois em R1
 
-### Em R2 (rode primeiro — fica aguardando)
+### 📍 Em R2 (rode primeiro — fica aguardando)
 ```bash
 # Escolha a porta serial do cabo PPP (digite o número):
 select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
@@ -235,7 +265,7 @@ select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo
 sudo pppd $SERIAL 115200 noauth local nocrtscts persist nodetach
 ```
 
-### Em R1 (outro terminal)
+### 📍 Em R1 (depois do R2)
 ```bash
 # Escolha a porta serial do cabo PPP (digite o número):
 select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo "SERIAL=$SERIAL"
@@ -243,7 +273,9 @@ select SERIAL in $(ls /dev/ttyUSB* /dev/ttyS? 2>/dev/null); do break; done; echo
 sudo pppd $SERIAL 115200 10.0.0.1:10.0.0.2 noauth local nocrtscts persist nodetach
 ```
 
-**Validar (em R1):**
+**Validar:**
+
+### 📍 Em R1
 ```bash
 ip -brief addr show ppp0       # 10.0.0.1 peer 10.0.0.2
 ping -c 3 10.0.0.2             # RTT alto é normal (enlace lento)
@@ -256,18 +288,23 @@ ping -c 3 10.0.0.2             # RTT alto é normal (enlace lento)
 
 ## 5. Rotas unicast — 📍 em R1 e em R2 (validação em S)
 
+### 📍 Em R1
 ```bash
-# R1: rota para a LAN#2
+# rota para a LAN#2 (que fica atrás de R2)
 sudo ip route add 192.168.0.0/24 via 10.0.0.2
+```
 
-# R2: rota de volta para a LAN#1 + saída para Internet via R1
+### 📍 Em R2
+```bash
+# rota de volta para a LAN#1 + saída para Internet via R1
 sudo ip route add 172.16.0.0/16 via 10.0.0.1
 sudo ip route add default via 10.0.0.1
 ```
 
 **Validar (fim-a-fim):**
+
+### 📍 Em S
 ```bash
-# Em S:
 ping -c 2 10.0.0.2 && ping -c 2 192.168.0.1
 ```
 
@@ -332,7 +369,12 @@ sudo iptables -A FORWARD -p tcp -d 172.16.0.2 --dport 80 -j ACCEPT
 sudo netfilter-persistent save
 ```
 
-**Validar:** em S (ou X depois do passo 7): `ping -c 2 8.8.8.8`.
+**Validar:**
+
+### 📍 Em S (ou em X, depois do passo 7)
+```bash
+ping -c 2 8.8.8.8              # Internet via NAT de R1
+```
 
 ---
 
@@ -360,7 +402,9 @@ echo "INTERFACESv4=\"$LAN2\"" | sudo tee /etc/default/isc-dhcp-server
 sudo systemctl restart isc-dhcp-server && sudo systemctl enable isc-dhcp-server
 ```
 
-**Validar em X e Y** (Desktop pega sozinho ao plugar; para forçar):
+**Validar** (Desktop pega IP sozinho ao plugar o cabo):
+
+### 📍 Em X e em Y
 ```bash
 ip -brief addr        # deve ter 192.168.0.10x/24
 ping -c 2 172.16.0.2  # alcança S através da WAN
@@ -371,7 +415,7 @@ ping -c 2 8.8.8.8     # Internet via NAT de R1
 
 ## 8. Roteamento multicast (smcroute) — 📍 em R1 e em R2 (teste: S envia, X recebe)
 
-### Em R1
+### 📍 Em R1
 ```bash
 # Escolha 1: interface da LAN#1. Escolha 2: interface do Lab (USB->Eth):
 select LAN1 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN1=$LAN1"
@@ -382,7 +426,7 @@ sudo smcroutectl add $LAN1 239.10.4.0/24 $LAB    # perfil LAN  -> Z/W no Lab
 sudo smcroutectl add $LAN1 239.20.4.0/24 ppp0    # perfil WAN  -> LAN#2 via WAN
 ```
 
-### Em R2
+### 📍 Em R2
 ```bash
 # Escolha a interface da LAN#2:
 select LAN2 in $(ls /sys/class/net | grep -vE '^(lo|ppp)'); do break; done; echo "LAN2=$LAN2"
@@ -393,12 +437,19 @@ sudo smcroutectl join $LAN2 239.20.4.1
 ```
 
 **Validar (teste sem VLC):**
+
+### 📍 Em X (deixe rodando — é o receptor)
 ```bash
-# Em X:
 iperf -s -u -B 239.20.4.1 -i 1
-# Em S:
+```
+
+### 📍 Em S (o emissor)
+```bash
 iperf -c 239.20.4.1 -u -T 5 -t 15 -b 80k -i 1
-# Em R1/R2: contadores subindo
+```
+
+### 📍 Em R1 e em R2 (contadores devem subir)
+```bash
 sudo smcroutectl show
 ```
 
@@ -414,8 +465,19 @@ sudo tc qdisc add dev ppp0 root tbf rate 115200bit burst 4kb latency 400ms
 tc -s qdisc show dev ppp0
 ```
 
-**Validar:** `iperf -s` em X, `iperf -c <ip-de-X>` em S → taxa ~115 kbps.
-Remover: `sudo tc qdisc del dev ppp0 root`.
+**Validar:**
+
+### 📍 Em X (receptor)
+```bash
+iperf -s
+```
+
+### 📍 Em S (emissor — a taxa medida deve ficar ~115 kbps)
+```bash
+iperf -c <ip-de-X>
+```
+
+Remover o limite: `sudo tc qdisc del dev ppp0 root` (em R1).
 
 ---
 
@@ -456,7 +518,9 @@ sudo named-checkconf && sudo named-checkzone grupo4.unb /etc/bind/db.grupo4.unb
 sudo systemctl restart bind9
 ```
 
-**Validar (de qualquer máquina):**
+**Validar:**
+
+### 📍 Em qualquer máquina
 ```bash
 nslookup s.grupo4.unb 172.16.0.2     # 172.16.0.2
 nslookup 172.16.0.1 172.16.0.2       # r1.grupo4.unb (reverso)
@@ -498,12 +562,15 @@ sudo adduser aluno2
 - Aceite a exceção do certificado autoassinado.
 
 **Validar:**
+
+### 📍 Em S
 ```bash
-# Em S:
 echo "teste" | mail -s "oi" aluno2@grupo4.unb
 sudo tail -n 5 /var/log/mail.log     # status=sent
 ```
-E no Thunderbird: enviar de aluno1 → aluno2 e ver chegar.
+
+### 📍 Em X (Thunderbird)
+Enviar de `aluno1` → `aluno2` e ver a mensagem chegar.
 
 ---
 
@@ -520,7 +587,9 @@ sudo sed -i 's|</VirtualHost>|\tProxyPreserveHost On\n\tProxyPass /api http://17
 sudo systemctl restart apache2
 ```
 
-**Validar (de X):**
+**Validar:**
+
+### 📍 Em X
 ```bash
 curl http://r1.grupo4.unb/        # página da intranet
 curl -I http://r1.grupo4.unb/api  # 503 é normal até o backend (Fase 2) existir
@@ -530,14 +599,14 @@ curl -I http://r1.grupo4.unb/api  # 503 é normal até o backend (Fase 2) existi
 
 ## 13. Bateria final de verificação — 📍 rodar em X
 
+### 📍 Em X
 ```bash
-# De X (cliente da LAN#2):
 ping -c 2 192.168.0.1 && ping -c 2 10.0.0.1 && ping -c 2 172.16.0.2 && ping -c 2 8.8.8.8
 nslookup s.grupo4.unb
 curl -s http://r1.grupo4.unb/ | head -1
-# Multicast: iperf (passo 8) recebendo em X
-# Banda: iperf unicast S->X limitado a ~115 kbps
 ```
+
+Além disso: multicast recebendo em X (teste do passo 8) e banda unicast S→X limitada a ~115 kbps (teste do passo 9).
 
 Tudo ok → Fase 1 concluída. Guarde as saídas (`comando | tee ~/projeto-frc/capturas/arquivo.txt`) como evidência para o relatório e o vídeo.
 
