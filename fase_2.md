@@ -1,100 +1,80 @@
-# Tutorial — Fase 2: Aplicação Mini-IPTV (Ubuntu 22.04, Grupo 4)
+# Fase 2 — Aplicação Mini-IPTV (Grupo 4)
 
-Pré-requisito: **Fase 1 funcionando** (rede, PPP, multicast, DNS, NAT, Apache em R1).
+Pré-requisito: Fase 1 funcionando (rede, PPP, multicast, DNS, NAT, Apache em R1).
 
 ## Arquitetura
 
-```mermaid
-graph LR
-    subgraph CLIENTE["Host do cliente (X/Y/Z/W)"]
-        NAV["Navegador<br/>(frontend)"]
-        VLCC["VLC Client"]
-    end
-    subgraph R1H["Host R1"]
-        GW["Apache<br/>API Gateway / proxy reverso<br/>(termina TLS)"]
-    end
-    subgraph SH["Host S"]
-        BE["Backend Flask :8000<br/>(API + lógica + JWT)"]
-        DBX[("SQLite")]
-        VLCS["cvlc<br/>VLC Server"]
-    end
-    NAV -->|"1. HTTPS (JSON/REST)"| GW
-    GW -->|"2. HTTP interno"| BE
-    BE --- DBX
-    BE -->|"3. inicia/para fluxos"| VLCS
-    VLCS -.->|"4. multicast UDP<br/>239.&lt;perfil&gt;.4.&lt;canal&gt;:5004"| VLCC
+```
+Navegador (X/Y/Z/W) ──HTTPS──> R1 Apache (gateway/proxy) ──HTTP──> S Flask :8000 ──> SQLite
+VLC Client (X/Y/Z/W) <══ multicast UDP 239.<perfil>.4.<canal>:5004 ══ S cvlc
 ```
 
-- Backend: **Python Flask + SQLite** em S (`/opt/miniiptv`), emite **JWT** via endpoint OAuth2 (password grant).
-- Perfil detectado pelo IP do cliente: `192.168.0.x` → **WAN115K** (239.20.4.x, vídeo LD), resto → **LAN** (239.10.4.x, vídeo original).
-- Regra WAN115K: **um canal por vez**; streaming inicia com o 1º espectador e para com o último.
+- Backend Flask + SQLite em S (`/opt/miniiptv`). Login OAuth2 (usuário/senha) → token **JWT**.
+- Perfil pelo IP do cliente: `192.168.0.x` → **WAN115K** (239.20.4.x, vídeo leve); resto → **LAN** (239.10.4.x, vídeo original).
+- Streaming só roda enquanto há espectador. **WAN115K: um canal por vez** (regra do enunciado).
+- Usuários: `admin/admin123`, `aluno1/senha1` … `aluno4/senha4`.
 
-> Blocos que dependem do PC seguem o padrão **A/B** da Fase 1: no A você digita a variável com o nome real da interface; no B cola o bloco. Domínio `grupo4.unb`, grupo **4**, porta multicast **5004**.
+## Índice
 
-## Índice por máquina
+| Passo | O quê | Onde |
+|---|---|---|
+| [1](#1-pacotes) | Pacotes | S |
+| [2](#2-vídeos) | Vídeos (ffmpeg/ffprobe) | S |
+| [3](#3-backend) | Backend + serviço | S |
+| [4](#4-testar-a-api) | Testar a API | S |
+| [5](#5-gateway-https) | Gateway HTTPS | R1 |
+| [6](#6-frontend) | Frontend | R1 |
+| [7](#7-usar) | Usar (cliente) | X/Y/Z/W |
+| [8](#8-validar-as-regras) | Validar as regras | clientes + S |
+| [9](#9-admin) | Visão do admin | qualquer |
 
-| Máquina | Passos em que ela roda comandos |
-|---|---|
-| **S** | 0 · 1 · 2 · 3 · 7 (conferências) |
-| **R1** | 4 · 5 · 7 (ocupação da WAN) |
-| **X / Y / Z / W** | 4 (validar) · 6 · 7 · 8 |
+> Alternativa: `sudo bash scripts/setup-rede.sh` (papéis S e R1) já faz os passos 1, 3, 5 e 6.
 
 ---
 
-## 0. Pacotes — 📍 só em S
+## 1. Pacotes
 
 ```bash
-sudo apt update
-sudo apt install -y python3-pip ffmpeg vlc-bin vlc-plugin-base sqlite3
+# S
+sudo apt update && sudo apt install -y python3-pip ffmpeg vlc-bin vlc-plugin-base sqlite3
 sudo pip3 install flask pyjwt werkzeug
-```
 
-> `vlc-bin` traz o `cvlc` (VLC sem GUI). O VLC **não roda como root** — criaremos um usuário de serviço.
-
-```bash
+# usuário de serviço (o VLC não roda como root)
 sudo useradd -r -m -d /opt/miniiptv iptv
 sudo mkdir -p /opt/miniiptv/videos
-sudo chown -R iptv:iptv /opt/miniiptv
-```
 
-Rota multicast de saída (os pacotes 239.x devem sair pela LAN#1):
-
-**A)** Digite a variável com o nome real da placa da LAN#1:
-```bash
-ip -brief link
-LAN1=enp0s31f6     # <-- TROQUE pelo nome real
-```
-
-**B)** Cole:
-```bash
-sudo ip route add 239.0.0.0/8 dev $LAN1
+# multicast sai pela placa da LAN#1 (troque IFACE)
+sudo ip route add 239.0.0.0/8 dev IFACE
 ```
 
 ---
 
-## 1. Preparar vídeos (ffmpeg / ffprobe) — 📍 só em S
+## 2. Vídeos
 
-Copie 3 vídeos `.mp4` para `/opt/miniiptv/videos/` (ex.: `filme.mp4`, `aula.mp4`, `show.mp4`).
+Copie 3 vídeos `.mp4` para `/opt/miniiptv/videos/` com os nomes `filme.mp4`, `aula.mp4`, `show.mp4`. Depois:
 
 ```bash
+# S — gera a versão leve de cada um (comando do enunciado, cabe nos 115200 bps)
 cd /opt/miniiptv/videos
-
-# Converter para versão de baixa qualidade (comando do enunciado, compatível com 115200 bps)
 for v in filme aula show; do
   ffmpeg -i ${v}.mp4 -c:v libx264 -b:v 80k -r 10 -s 320x240 \
          -c:a aac -b:a 16k -ac 1 -ar 22050 ${v}_ld.mp4
 done
 
-# Ver metadados (usados no cadastro: duração, resolução, bitrate, codecs)
+# metadados de um vídeo (duração, resolução, bitrate, codecs — para o cadastro)
 ffprobe -v quiet -show_format -show_streams filme.mp4 | grep -E 'duration|bit_rate|codec_name|width|height'
-sudo chown iptv:iptv /opt/miniiptv/videos/*
+
+sudo chown -R iptv:iptv /opt/miniiptv/videos
 ```
 
 ---
 
-## 2. Backend Flask — 📍 só em S
+## 3. Backend
+
+Grava o código, cria o banco e deixa rodando como serviço:
 
 ```bash
+# S
 sudo tee /opt/miniiptv/app.py >/dev/null <<'EOF'
 import os, json, sqlite3, subprocess, functools, datetime, jwt
 from flask import Flask, request, jsonify, g
@@ -270,9 +250,10 @@ if __name__ == "__main__":
 EOF
 ```
 
-Banco de dados + usuários iniciais:
+Banco com usuários e canais iniciais:
 
 ```bash
+# S
 sudo tee /opt/miniiptv/initdb.py >/dev/null <<'EOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
@@ -285,7 +266,6 @@ CREATE TABLE IF NOT EXISTS videos(channel INTEGER PRIMARY KEY, arq_hd TEXT, arq_
 for u, p, r in [("admin", "admin123", "admin"), ("aluno1", "senha1", "user"), ("aluno2", "senha2", "user"),
                 ("aluno3", "senha3", "user"), ("aluno4", "senha4", "user")]:
     c.execute("INSERT OR REPLACE INTO users VALUES(?,?,?)", (u, generate_password_hash(p), r))
-# canais iniciais + vínculo com os vídeos do passo 1
 canais = [(1, "Filme", "Canal de filmes", "filme"), (2, "Aula", "Canal de aulas", "aula"), (3, "Show", "Canal de shows", "show")]
 for n, nome, d, arq in canais:
     c.execute("INSERT OR REPLACE INTO channels VALUES(?,?,?)", (n, nome, d))
@@ -294,13 +274,15 @@ for n, nome, d, arq in canais:
 c.commit()
 print("ok")
 EOF
-sudo -u iptv python3 /opt/miniiptv/initdb.py
+
 sudo chown -R iptv:iptv /opt/miniiptv
+sudo -u iptv python3 /opt/miniiptv/initdb.py
 ```
 
-Serviço systemd:
+Serviço systemd (sobe sozinho no boot):
 
 ```bash
+# S
 sudo tee /etc/systemd/system/miniiptv.service >/dev/null <<'EOF'
 [Unit]
 Description=Backend Mini-IPTV
@@ -313,39 +295,35 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now miniiptv
+sudo systemctl daemon-reload && sudo systemctl enable --now miniiptv
 systemctl is-active miniiptv     # active
 ```
 
 ---
 
-## 3. Testar a API antes do gateway — 📍 em S
+## 4. Testar a API
 
-### 📍 Em S
 ```bash
-# Obter token JWT (OAuth2 password grant)
-TOK=$(curl -s -X POST http://localhost:8000/api/token \
-      -d username=aluno1 -d password=senha1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-echo $TOK
+# S — pega um token (OAuth2 password grant)
+TOK=$(curl -s -X POST http://localhost:8000/api/token -d username=aluno1 -d password=senha1 \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 
-# Listar canais
+# lista canais (com token) — deve vir JSON com 3 canais
 curl -s -H "Authorization: Bearer $TOK" http://localhost:8000/api/channels | python3 -m json.tool
 
-# Sem token deve dar 401
+# sem token -> 401
 curl -s http://localhost:8000/api/channels
 ```
 
 ---
 
-## 4. API Gateway com HTTPS — 📍 só em R1 (validação em X)
+## 5. Gateway HTTPS
 
-O frontend fala **HTTPS com R1**; R1 repassa em **HTTP interno** para S (como na Figura 2 do enunciado).
+R1 termina o TLS e repassa `/api` para S (arquitetura da Figura 2 do enunciado):
 
-### 📍 Em R1
 ```bash
-# certificado autoassinado + vhost SSL
-sudo a2enmod ssl proxy proxy_http headers
+# R1
+sudo a2enmod ssl proxy proxy_http
 sudo openssl req -new -x509 -days 365 -nodes -subj "/CN=r1.grupo4.unb" \
   -out /etc/ssl/certs/r1.pem -keyout /etc/ssl/private/r1.key
 
@@ -357,30 +335,23 @@ sudo tee /etc/apache2/sites-available/miniiptv-ssl.conf >/dev/null <<'EOF'
     SSLCertificateKeyFile /etc/ssl/private/r1.key
     DocumentRoot /var/www/html
     ProxyPreserveHost On
-    # repassa o IP real do cliente para o backend decidir o perfil
-    RemoteIPHeader X-Forwarded-For
     ProxyPass        /api http://172.16.0.2:8000/api
     ProxyPassReverse /api http://172.16.0.2:8000/api
 </VirtualHost>
 EOF
-sudo a2ensite miniiptv-ssl
-sudo systemctl reload apache2
+sudo a2ensite miniiptv-ssl && sudo systemctl reload apache2
 ```
 
-**Validar:**
-
-### 📍 Em X
-```bash
-curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1
-```
-> `-k` aceita o certificado autoassinado.
+**Testar (em X):** `curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1` → devolve o token (`-k` aceita o certificado autoassinado).
 
 ---
 
-## 5. Frontend (página estática) — 📍 só em R1
+## 6. Frontend
 
-### 📍 Em R1
+Página única servida por R1 — login, lista de canais, assistir/sair:
+
 ```bash
+# R1
 sudo tee /var/www/html/iptv.html >/dev/null <<'EOF'
 <!doctype html><meta charset="utf-8"><title>Mini-IPTV Grupo 4</title>
 <style>body{font-family:sans-serif;max-width:720px;margin:2em auto}li{margin:.6em 0}
@@ -423,127 +394,68 @@ EOF
 
 ---
 
-## 6. Fluxo do cliente — 📍 em X, Y (perfil WAN115K) e Z, W (perfil LAN)
+## 7. Usar
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as Usuário (X)
-    participant F as Frontend<br/>(navegador)
-    participant G as R1 Apache<br/>(API Gateway)
-    participant B as S Backend<br/>(Flask)
-    participant V as S cvlc<br/>(VLC Server)
-    participant C as VLC Client (X)
-
-    U->>F: login (aluno1/senha1)
-    F->>G: POST /api/token (HTTPS)
-    G->>B: POST /api/token (HTTP interno)
-    B-->>F: JWT (access_token)
-    F->>G: GET /api/channels (Bearer JWT)
-    G->>B: repassa + X-Forwarded-For
-    B-->>F: canais + perfil WAN115K
-    U->>F: clica "Assistir canal 1"
-    F->>G: POST /api/channels/1/watch
-    G->>B: repassa
-    B->>V: inicia cvlc → 239.20.4.1:5004 (vídeo LD)
-    B-->>F: mcast + playlist .m3u
-    U->>C: abre canal1.m3u no VLC
-    V--)C: streaming multicast UDP (via R1→WAN→R2)
-    U->>F: "Sair" → POST /leave
-    B->>V: encerra cvlc (se não há espectadores)
-```
+Em qualquer cliente (X, Y, Z, W):
 
 1. Navegador → `https://r1.grupo4.unb/iptv.html` (aceite o certificado).
-2. Login `aluno1 / senha1` → lista de canais mostra **perfil detectado** (WAN115K em X/Y, LAN em Z/W).
-3. **Assistir** → baixa `canalN.m3u` → abra no VLC (`vlc canalN.m3u` ou duplo clique).
-4. Ou direto no VLC: *Mídia → Abrir fluxo de rede* → `udp://@239.20.4.1:5004`.
-5. **Sair** ao terminar (libera a WAN para outro canal).
+2. Login (`aluno1/senha1`). A página mostra o **perfil detectado** (WAN115K em X/Y, LAN em Z/W).
+3. **Assistir** → baixa `canalN.m3u` → abra no VLC (duplo clique ou `vlc canalN.m3u`).
+   Ou direto no VLC: *Mídia → Abrir fluxo de rede* → `udp://@239.20.4.1:5004`.
+4. **Sair** ao terminar (libera a WAN para outro canal).
 
 ---
 
-## 7. Validar as regras de negócio — 📍 clientes X/Y/Z/W · conferências em S e R1
+## 8. Validar as regras
 
-**Decisão do backend ao receber `watch` de um cliente WAN115K:**
+**WAN115K — um canal por vez** (X e Y no navegador):
+1. X assiste canal 1 → ok (recebe `239.20.4.1`, vídeo leve).
+2. Y tenta canal 2 → **erro "WAN ocupada: canal 1"**.
+3. Y assiste canal 1 → ok, mesmo fluxo multicast de X.
+4. Os dois saem → streaming para → agora Y consegue o canal 2.
 
-```mermaid
-flowchart TD
-    A["Cliente WAN115K pede canal N"] --> B{"Há outro canal<br/>WAN em exibição?"}
-    B -- "sim, canal M ≠ N" --> C["409 — WAN ocupada:<br/>só pode assistir o canal M"]
-    B -- "não (ou é o mesmo N)" --> D{"Canal N já<br/>em streaming?"}
-    D -- não --> E["Inicia cvlc com vídeo LD<br/>→ 239.20.4.N:5004"]
-    D -- sim --> F["Reusa o fluxo multicast existente"]
-    E --> G["Registra espectador e devolve .m3u"]
-    F --> G
-    G --> H{"Último espectador saiu?<br/>(POST /leave)"}
-    H -- sim --> I["Encerra cvlc — WAN liberada:<br/>próximo cliente escolhe o canal"]
+**LAN — canais simultâneos** (Z e W): Z no canal 1 (`239.10.4.1`, HD) e W no canal 2 (`239.10.4.2`, HD) ao mesmo tempo → ambos funcionam.
+
+**Streaming sob demanda** (em S):
+
+```bash
+pgrep -a vlc    # vazio antes de alguém assistir; aparece cvlc ao assistir; some quando todos saem
 ```
 
-### 📍 Em X e Y (navegador — regra WAN115K: um canal por vez)
-1. **Em X:** assistir canal 1 → ok (recebe `239.20.4.1`, versão LD).
-2. **Em Y:** assistir canal 2 → deve receber **erro 409** "WAN ocupada: canal 1".
-3. **Em Y:** assistir canal 1 → ok (mesmo fluxo multicast que X).
-4. X e Y saem do canal 1 → streaming para; agora Y pode escolher o canal 2.
+---
 
-### 📍 Em Z e W (navegador — regra LAN: canais simultâneos, qualidade original)
-- **Em Z:** assistir canal 1 (`239.10.4.1`, HD) e, ao mesmo tempo, **em W:** canal 2 (`239.10.4.2`, HD) → ambos funcionam.
+## 9. Admin
 
-### 📍 Em S (streaming inicia/para conforme o interesse)
 ```bash
-pgrep -a vlc     # antes de alguém assistir: vazio
-                 # após "Assistir": aparece cvlc ... dst=239.20.4.1
-                 # após todos saírem: o processo some
-```
+# de qualquer máquina — token de admin
+TOK=$(curl -sk https://r1.grupo4.unb/api/token -d username=admin -d password=admin123 \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 
-### 📍 Em qualquer máquina (visão do admin)
-```bash
-TOK=$(curl -sk https://r1.grupo4.unb/api/token -d username=admin -d password=admin123 | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+# usuários conectados, canais ativos, processos VLC
 curl -sk -H "Authorization: Bearer $TOK" https://r1.grupo4.unb/api/admin/status | python3 -m json.tool
-```
 
-### 📍 Em R1 (ocupação da WAN e fluxos multicast ativos)
-```bash
-tc -s qdisc show dev ppp0
-sudo smcroutectl show
-```
+# cadastrar canal
+curl -sk -X POST -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
+  -d '{"num":4,"nome":"Esporte","desc":"novo canal"}' https://r1.grupo4.unb/api/channels
 
-### 📍 Em qualquer máquina (upload de vídeo novo, como admin)
-```bash
+# upload de vídeo (converte p/ LD e extrai metadados sozinho)
 curl -sk -H "Authorization: Bearer $TOK" \
-  -F "file=@novo_video.mp4" -F "channel=3" https://r1.grupo4.unb/api/videos
-# resposta traz os metadados (duração, bitrate) extraídos pelo ffprobe
+  -F "file=@novo.mp4" -F "channel=4" https://r1.grupo4.unb/api/videos
 ```
 
----
-
-## 8. Bateria final — 📍 X e Z (clientes) · R1/R2 (contadores)
-
-### 📍 Em X (perfil WAN115K)
-```bash
-curl -sk https://r1.grupo4.unb/api/token -d username=aluno1 -d password=senha1   # token OK
-```
-Frontend lista canais com perfil **WAN115K**; VLC reproduz `239.20.4.1:5004` (vídeo LD).
-
-### 📍 Em Z (perfil LAN)
-VLC reproduz `239.10.4.1:5004` (vídeo HD) enquanto W assiste outro canal.
-
-### 📍 Em R1 e em R2
-```bash
-sudo smcroutectl show      # contadores dos grupos crescendo
-```
-
-Tudo ok → Fase 2 concluída. Evidências para o vídeo/relatório: tela do frontend com perfil, VLC reproduzindo nos dois perfis, o 409 da regra WAN, `pgrep vlc` antes/depois, `smcroutectl show`, saída do `/api/admin/status`.
+Ocupação da WAN e fluxos multicast (em R1): `tc -s qdisc show dev ppp0` e `sudo smcroutectl show`.
 
 ---
 
 ## Problemas comuns
 
-| Sintoma | Causa provável | Correção |
+| Sintoma | Causa | Solução |
 |---|---|---|
-| VLC não reproduz nada | multicast não chega (Fase 1) ou TTL baixo | teste `iperf` do tutorial 1; `--ttl 16` já está no cvlc |
-| cvlc morre na hora | rodando como root ou arquivo inexistente | serviço roda como `iptv`; confira caminho do vídeo |
-| vídeo trava/quadriculado na WAN | bitrate acima de 115 kbps | reconverta com `-b:v 80k` (passo 1); confira `tc` |
-| 401 em tudo | token ausente/expirado | refaça `/api/token`; validade 4 h |
-| perfil errado (X aparece como LAN) | Apache não repassa o IP do cliente | vhost com `ProxyPreserveHost`/`X-Forwarded-For` (passo 4) |
-| 502 no gateway | backend parado | `systemctl status miniiptv`; `journalctl -u miniiptv -e` |
-| upload falha | pasta sem permissão | `chown -R iptv:iptv /opt/miniiptv` |
-| multicast sai pela interface errada em S | falta rota 239/8 | `ip route add 239.0.0.0/8 dev LAN1` |
+| VLC não reproduz | multicast não chega (Fase 1, passo 9) | teste com iperf; contadores em `smcroutectl show` |
+| vídeo trava na WAN | bitrate acima de 115 kbps | use a versão `_ld` (passo 2) |
+| 401 em tudo | token ausente/expirado (4 h) | pegue outro em `/api/token` |
+| perfil errado (X vira LAN) | gateway não repassa o IP do cliente | `ProxyPreserveHost On` no vhost (passo 5) |
+| 502/503 no gateway | backend parado | `systemctl status miniiptv`; `journalctl -u miniiptv -e` |
+| "canal sem video" | vídeo não está em `/opt/miniiptv/videos` | passo 2 (nomes exatos: filme/aula/show) |
+| upload falha | permissão | `sudo chown -R iptv:iptv /opt/miniiptv` |
+| cvlc morre na hora | caminho do vídeo errado ou rodando como root | serviço roda como `iptv`; confira o arquivo |
